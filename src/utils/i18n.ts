@@ -150,7 +150,8 @@ export const translations = {
     sellWall: "Click to sell (5 Akce)",
     toggleGate: "Click to open/close",
     protecting: "PROTECTING",
-    returnToCircle: "RETURN TO CIRCLE!"
+    returnToCircle: "RETURN TO CIRCLE!",
+    cantBuildUnderground: "Can't build underground!"
   },
   ru: {
     // Slogans
@@ -295,7 +296,8 @@ export const translations = {
     sellWall: "Нажмите, чтобы продать (5 Акче)",
     toggleGate: "Нажмите, чтобы открыть/закрыть",
     protecting: "СОПРОВОЖДЕНИЕ",
-    returnToCircle: "ВЕРНИТЕСЬ В КРУГ!"
+    returnToCircle: "ВЕРНИТЕСЬ В КРУГ!",
+    cantBuildUnderground: "Под землей строить нельзя!"
   },
   tr: {
     // Slogans

@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Joystick from './Joystick';
-import { Crown, Shield, Sword, Check, ArrowLeft, Users, Zap, RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
+import { Crown, Shield, Sword, Check, ArrowLeft, Users, Zap,
+  WifiOff,
+  RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { cn } from '../utils/cn';
 
@@ -100,12 +102,12 @@ const UNIT_PRICES = {
     gate: 20
 };
 
-type UnitType = 'infantry' | 'archer' | 'tower' | 'wall' | 'gate';
+type UnitType = 'infantry' | 'tower' | 'wall' | 'gate';
 
 interface Vector { x: number; y: number; }
 interface Unit { pos: Vector; color: string; id: string; type: UnitType; hp: number; empireId?: EmpireType | 'neutral'; }
 interface Projectile { id: string; ownerId: string; pos: Vector; vel: Vector; life: number; damage: number; color: string; empireId?: EmpireType; targetPos?: Vector; isReal?: boolean; }
-interface Tower { id: string; ownerId: string; pos: Vector; color: string; hp: number; maxHp: number; lastShot: number; faction?: string; empireId?: EmpireType; type?: 'tower' | 'wall' | 'gate'; rotation?: number; isOpen?: boolean; }
+interface Tower { id: string; ownerId: string; pos: Vector; color: string; hp: number; maxHp: number; lastShot: number; faction?: string; empireId?: EmpireType; type?: 'tower' | 'wall' | 'gate' | 'tunnel'; rotation?: number; isOpen?: boolean; }
 interface Obstacle { id: string; type: 'tree' | 'boulder' | 'grass'; points?: Vector[]; center: Vector; radius: number; color: string; }
 interface Garrison { 
   id: string; 
@@ -123,8 +125,10 @@ interface Garrison {
   isPulsing?: boolean;
   justSplit: boolean;
   isLocal?: boolean;
+  isUnderground?: boolean; // NEW: Layer isolation
   swingKills?: number; // Tracks kills in current swing
   lastDamageTime?: number; // Protection against damage spam
+  lastUpdate?: number;
 }
 
 interface Entity { 
@@ -135,9 +139,9 @@ interface Entity {
   color: string; 
   faction: string;
   empireId: EmpireType;
- akce: number;
+  akce: number;
   score: number;
-  lastKnownUnitCount?: number; // Last count received from owner
+  lastKnownUnitCount?: number;
   isDashing: boolean; 
   velocity: Vector;
   facingAngle: number;
@@ -152,9 +156,22 @@ interface Entity {
   lastPos?: Vector;
   panicTimer?: number;
   lastAkceTime?: number;
-  hasHitInCurrentSwing?: boolean; // To prevent multiple hits per swing on buildings
-  swingKills?: number; // Tracks unit kills in current swing
-  lastDamageTime?: number; // Protection against damage spam
+  hasHitInCurrentSwing?: boolean;
+  swingKills?: number;
+  lastDamageTime?: number;
+  lastUpdate?: number;
+  isUnderground?: boolean; // NEW: Underground state
+  lastTunnelToggle?: number; // NEW: Cooldown for tunnel entry/exit
+  equippedItem?: 'sword' | 'shovel' | 'super_shovel'; // NEW: Inventory
+  shovelUses?: number; // NEW: Shovel durability
+}
+
+interface TunnelEntrance {
+  id: string;
+  pos: Vector;
+  ownerId: string;
+  color: string;
+  connectedId?: string; // ID of the exit (if completed)
 }
 interface Particle { pos: Vector; vel: Vector; life: number; maxLife: number; color: string; type?: 'dust' | 'slash' | 'tower_dust' | 'ripple' | 'text'; text?: string; }
 
@@ -242,7 +259,7 @@ class MapGenerator {
   }
 }
 
-const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, isCommander: boolean, angle: number, isAttacking: boolean, attackTimer: number, opacity: number = 1.0, type: UnitType = 'infantry', empireId: EmpireType | 'neutral' = 'neutral') => {
+const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, isCommander: boolean, angle: number, isAttacking: boolean, attackTimer: number, opacity: number = 1.0, type: UnitType = 'infantry', empireId: EmpireType | 'neutral' = 'neutral', equippedItem?: string) => {
     const scale = isCommander ? COMMANDER_SCALE : 1.0;
     const radius = UNIT_RADIUS * scale;
     const bob = Math.sin(Date.now() * 0.007) * 4;
@@ -288,24 +305,12 @@ const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: st
         
         ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1; ctx.stroke();
       }
-      ctx.fillStyle = drawColor; ctx.beginPath(); ctx.roundRect(-radius * 1.2, radius * 0.4, radius * 2.4, radius * 2.2, 4); ctx.fill();
+      ctx.fillStyle = drawColor; ctx.beginPath(); ctx.rect(-radius * 1.2, radius * 0.4, radius * 2.4, radius * 2.2); ctx.fill();
       
-      if (type === 'archer' && !isCommander) {
-        // --- RUSSIAN ARCHER (STRELTSY STYLE) ---
-        // Kaftan decoration
-        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1;
-        for(let i=0; i<3; i++) {
-          ctx.beginPath(); ctx.moveTo(-radius * 0.8, radius * (0.8 + i*0.5)); ctx.lineTo(radius * 0.8, radius * (0.8 + i*0.5)); ctx.stroke();
-        }
-        // Berdish/Bow on back
-        ctx.strokeStyle = '#451a03'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(-radius * 1.2, radius * 0.5); ctx.lineTo(radius * 0.5, radius * 2.5); ctx.stroke();
-      } else {
-        // Plate Armor
-        const plateGrad = ctx.createLinearGradient(-radius, 0, radius, 0);
-        plateGrad.addColorStop(0, '#94a3b8'); plateGrad.addColorStop(0.5, '#f1f5f9'); plateGrad.addColorStop(1, '#94a3b8');
-        ctx.fillStyle = plateGrad; ctx.beginPath(); ctx.moveTo(-radius * 0.8, radius * 0.6); ctx.lineTo(radius * 0.8, radius * 0.6); ctx.lineTo(radius * 0.7, radius * 2.2); ctx.lineTo(-radius * 0.7, radius * 2.2); ctx.closePath(); ctx.fill();
-      }
+      // Plate Armor
+      const plateGrad = ctx.createLinearGradient(-radius, 0, radius, 0);
+      plateGrad.addColorStop(0, '#94a3b8'); plateGrad.addColorStop(0.5, '#f1f5f9'); plateGrad.addColorStop(1, '#94a3b8');
+      ctx.fillStyle = plateGrad; ctx.beginPath(); ctx.moveTo(-radius * 0.8, radius * 0.6); ctx.lineTo(radius * 0.8, radius * 0.6); ctx.lineTo(radius * 0.7, radius * 2.2); ctx.lineTo(-radius * 0.7, radius * 2.2); ctx.closePath(); ctx.fill();
       
       ctx.fillStyle = '#cbd5e1'; ctx.beginPath(); ctx.arc(-radius * 1.1, radius * 0.8, radius * 0.6, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(radius * 1.1, radius * 0.8, radius * 0.6, 0, Math.PI * 2); ctx.fill();
       
@@ -318,14 +323,16 @@ const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: st
       const swingAngle = isAttacking ? Math.PI / 1.5 * Math.sin(swingProgress * Math.PI) : 0;
       ctx.save(); ctx.translate(radius * 1.2, radius * 1.0); ctx.rotate(-swingAngle);
       if (isCommander) {
-        ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(radius * 1.5, -radius * 1.5, radius * 0.5, -radius * 4.5); ctx.stroke();
-        ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
-      } else if (type === 'archer') {
-        // BOW
-        ctx.strokeStyle = '#451a03'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(radius * 0.5, -radius * 1.5); ctx.quadraticCurveTo(radius * 2.0, 0, radius * 0.5, radius * 1.5); ctx.stroke();
-        ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(radius * 0.5, -radius * 1.5); ctx.lineTo(radius * 0.5, radius * 1.5); ctx.stroke();
+        if (equippedItem === 'shovel' || equippedItem === 'super_shovel') {
+          // --- RUSSIAN STYLE SHOVEL ---
+          ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 3.5; ctx.beginPath(); ctx.moveTo(0, radius); ctx.lineTo(0, -radius * 4); ctx.stroke();
+          ctx.fillStyle = equippedItem === 'super_shovel' ? '#fbbf24' : '#94a3b8';
+          ctx.beginPath(); ctx.moveTo(-8, -radius * 4); ctx.lineTo(8, -radius * 4); ctx.lineTo(0, -radius * 6); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1; ctx.stroke();
+        } else {
+          ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(radius * 1.5, -radius * 1.5, radius * 0.5, -radius * 4.5); ctx.stroke();
+          ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+        }
       } else {
         ctx.strokeStyle = '#451a03'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, radius); ctx.lineTo(0, -radius * 5); ctx.stroke();
         ctx.fillStyle = '#cbd5e1'; ctx.beginPath(); ctx.moveTo(-4, -radius * 5); ctx.lineTo(4, -radius * 5); ctx.lineTo(0, -radius * 6.5); ctx.closePath(); ctx.fill();
@@ -333,41 +340,32 @@ const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: st
       ctx.restore();
       ctx.fillStyle = '#ffd6a5'; ctx.beginPath(); ctx.arc(0, 0, radius * 0.9, 0, Math.PI * 2); ctx.fill();
       
-      if (type === 'archer' && !isCommander) {
-        // Fur hat (Shapka)
-        ctx.fillStyle = '#451a03'; ctx.beginPath(); ctx.ellipse(0, -radius * 0.2, radius * 1.1, radius * 0.6, 0, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = drawColor; ctx.beginPath(); ctx.arc(0, -radius * 0.6, radius * 0.7, Math.PI, 0); ctx.fill();
-      } else {
-        ctx.fillStyle = '#475569'; ctx.beginPath(); ctx.moveTo(-radius * 0.9, radius * 0.3); ctx.lineTo(radius * 0.9, radius * 0.3); ctx.lineTo(radius * 0.7, radius * 0.8); ctx.lineTo(-radius * 0.7, radius * 0.8); ctx.closePath(); ctx.fill();
-        const helmetGrad = ctx.createLinearGradient(-radius, -radius, radius, 0);
-        helmetGrad.addColorStop(0, '#f1f5f9'); helmetGrad.addColorStop(1, '#64748b');
-        ctx.fillStyle = helmetGrad; ctx.beginPath(); ctx.moveTo(-radius, 0); ctx.bezierCurveTo(-radius, -radius * 2.2, radius, -radius * 2.2, radius, 0); ctx.fill();
-        ctx.fillStyle = isCommander ? '#fbbf24' : '#94a3b8'; ctx.fillRect(-1.5, -radius * 2.4, 3, radius * 0.8); if (isCommander) { ctx.beginPath(); ctx.arc(0, -radius * 2.4, 4, 0, Math.PI * 2); ctx.fill(); }
-      }
+      ctx.fillStyle = '#475569'; ctx.beginPath(); ctx.moveTo(-radius * 0.9, radius * 0.3); ctx.lineTo(radius * 0.9, radius * 0.3); ctx.lineTo(radius * 0.7, radius * 0.8); ctx.lineTo(-radius * 0.7, radius * 0.8); ctx.closePath(); ctx.fill();
+      const helmetGrad = ctx.createLinearGradient(-radius, -radius, radius, 0);
+      helmetGrad.addColorStop(0, '#f1f5f9'); helmetGrad.addColorStop(1, '#64748b');
+      ctx.fillStyle = helmetGrad; ctx.beginPath(); ctx.moveTo(-radius, 0); ctx.bezierCurveTo(-radius, -radius * 2.2, radius, -radius * 2.2, radius, 0); ctx.fill();
+      ctx.fillStyle = isCommander ? '#fbbf24' : '#94a3b8'; ctx.fillRect(-1.5, -radius * 2.4, 3, radius * 0.8); if (isCommander) { ctx.beginPath(); ctx.arc(0, -radius * 2.4, 4, 0, Math.PI * 2); ctx.fill(); }
 
     } else if (empireId === 'fim') {
       // --- FRENCH EMPIRE WARRIOR ---
       ctx.fillStyle = drawColor; ctx.beginPath(); ctx.moveTo(-radius * 1.1, radius * 0.4); ctx.lineTo(radius * 1.1, radius * 0.4); ctx.lineTo(radius * 0.8, radius * 2.5); ctx.lineTo(-radius * 0.8, radius * 2.5); ctx.fill();
-      
-      if (type === 'archer' && !isCommander) {
-          // --- FRENCH ARCHER (CHASSEUR STYLE) ---
-          ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.moveTo(-radius * 0.6, radius * 0.4); ctx.lineTo(-radius * 0.6, radius * 2.5); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(radius * 0.6, radius * 0.4); ctx.lineTo(radius * 0.6, radius * 2.5); ctx.stroke();
-      } else {
-          ctx.fillStyle = '#fbbf24'; ctx.fillRect(-radius * 1.3, radius * 0.3, radius * 0.6, radius * 0.3); ctx.fillRect(radius * 0.7, radius * 0.3, radius * 0.6, radius * 0.3);
-      }
+      ctx.fillStyle = '#fbbf24'; ctx.fillRect(-radius * 1.3, radius * 0.3, radius * 0.6, radius * 0.3); ctx.fillRect(radius * 0.7, radius * 0.3, radius * 0.6, radius * 0.3);
 
       const swingProgress = isAttacking ? (300 - attackTimer) / 300 : 0;
       const swingAngle = isAttacking ? Math.PI / 1.5 * Math.sin(swingProgress * Math.PI) : 0;
       ctx.save(); ctx.translate(radius * 0.9, radius * 0.8); ctx.rotate(-swingAngle);
-      if (type === 'archer' && !isCommander) {
-        // FRENCH CROSSBOW/BOW
-        ctx.strokeStyle = '#451a03'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(radius * 0.5, -radius * 1.5); ctx.quadraticCurveTo(radius * 1.5, 0, radius * 0.5, radius * 1.5); ctx.stroke();
-        ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(radius * 0.5, -radius * 1.5); ctx.lineTo(radius * 0.5, radius * 1.5); ctx.stroke();
-      } else if (isCommander || type === 'infantry') {
-        ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2.5 * scale; ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(radius * 1.5, -radius * 1.0, radius * 0.5, -radius * 3.5); ctx.stroke();
-        ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(0, 0, radius * 0.4, 0, Math.PI*2); ctx.fill();
+      if (isCommander || type === 'infantry') {
+        if (equippedItem === 'shovel' || equippedItem === 'super_shovel') {
+          // --- FRENCH STYLE SHOVEL ---
+          ctx.strokeStyle = '#451a03'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, radius); ctx.lineTo(0, -radius * 4); ctx.stroke();
+          ctx.fillStyle = equippedItem === 'super_shovel' ? '#fbbf24' : '#cbd5e1';
+          ctx.beginPath(); ctx.ellipse(0, -radius * 4.5, 10, 12, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1; ctx.stroke();
+        } else {
+          // Draw Sword
+          ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2.5 * scale; ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(radius * 1.5, -radius * 1.0, radius * 0.5, -radius * 3.5); ctx.stroke();
+          ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(0, 0, radius * 0.4, 0, Math.PI*2); ctx.fill();
+        }
       }
       ctx.restore();
       ctx.fillStyle = '#ffd6a5'; ctx.beginPath(); ctx.arc(0, 0, radius * 0.85, 0, Math.PI * 2); ctx.fill();
@@ -375,11 +373,6 @@ const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: st
         ctx.fillStyle = '#18181b'; ctx.beginPath(); ctx.ellipse(0, -radius * 0.5, radius * 1.8, radius * 0.8, 0, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(0, -radius * 1.0, radius * 0.3, 0, Math.PI*2); ctx.fill();
         ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(0, -radius * 1.0, radius * 0.15, 0, Math.PI*2); ctx.fill();
-      } else if (type === 'archer') {
-        // Shako with plume
-        ctx.fillStyle = '#18181b'; ctx.fillRect(-radius * 0.7, -radius * 2.2, radius * 1.4, radius * 2.2);
-        ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.moveTo(0, -radius * 2.2); ctx.lineTo(radius * 0.4, -radius * 3.2); ctx.lineTo(-radius * 0.1, -radius * 2.2); ctx.fill();
-        ctx.fillStyle = '#fbbf24'; ctx.fillRect(-radius * 0.7, -radius * 0.3, radius * 1.4, radius * 0.3);
       } else {
         ctx.fillStyle = '#18181b'; ctx.fillRect(-radius * 0.8, -radius * 1.8, radius * 1.6, radius * 1.8);
         ctx.fillStyle = '#fbbf24'; ctx.fillRect(-radius * 0.8, -radius * 1.8, radius * 1.6, radius * 0.3);
@@ -395,20 +388,19 @@ const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: st
       const swingProgress = isAttacking ? (300 - attackTimer) / 300 : 0;
       const swingAngle = isAttacking ? Math.PI / 1.5 * Math.sin(swingProgress * Math.PI) : 0;
       ctx.save(); ctx.translate(radius * 1.0, radius * 0.8); ctx.rotate(-swingAngle);
-      if (type === 'archer' && !isCommander) {
-        // OTTOMAN RECURVE BOW
-        ctx.strokeStyle = '#451a03'; ctx.lineWidth = 2.5;
-        ctx.beginPath(); ctx.moveTo(radius * 0.5, -radius * 1.5); 
-        ctx.quadraticCurveTo(radius * 2.5, -radius * 0.5, radius * 2.5, 0);
-        ctx.quadraticCurveTo(radius * 2.5, radius * 0.5, radius * 0.5, radius * 1.5);
-        ctx.stroke();
-        ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 0.8;
-        ctx.beginPath(); ctx.moveTo(radius * 0.5, -radius * 1.5); ctx.lineTo(radius * 0.5, radius * 1.5); ctx.stroke();
-      } else if (isCommander || type === 'infantry') {
-        ctx.fillStyle = drawColor; ctx.beginPath(); ctx.ellipse(radius * 0.3, -radius * 0.1, radius * 0.5, radius * 0.2, -Math.PI/6, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = '#92400e'; ctx.fillRect(radius * 0.5, -radius * 0.4, radius * 0.4, radius * 0.2);
-        ctx.fillStyle = '#fbbf24'; ctx.fillRect(radius * 0.7, -radius * 0.6, radius * 0.1, radius * 0.6);
-        ctx.strokeStyle = isAttacking ? '#ff4444' : '#e2e8f0'; ctx.lineWidth = 2.5 * scale; ctx.beginPath(); ctx.moveTo(radius * 0.8, -radius * 0.3); ctx.quadraticCurveTo(radius * 2.5, -radius * 1.5, radius * 1.2, -radius * 3.5); ctx.stroke();
+      if (isCommander || type === 'infantry') {
+        if (equippedItem === 'shovel' || equippedItem === 'super_shovel') {
+          // --- OTTOMAN STYLE SHOVEL ---
+          ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, radius); ctx.lineTo(0, -radius * 4); ctx.stroke();
+          ctx.fillStyle = equippedItem === 'super_shovel' ? '#fbbf24' : '#cbd5e1';
+          ctx.beginPath(); ctx.moveTo(-9, -radius * 4); ctx.lineTo(9, -radius * 4); ctx.quadraticCurveTo(0, -radius * 7, -9, -radius * 4); ctx.fill();
+          ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1; ctx.stroke();
+        } else {
+          ctx.fillStyle = drawColor; ctx.beginPath(); ctx.ellipse(radius * 0.3, -radius * 0.1, radius * 0.5, radius * 0.2, -Math.PI/6, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle = '#92400e'; ctx.fillRect(radius * 0.5, -radius * 0.4, radius * 0.4, radius * 0.2);
+          ctx.fillStyle = '#fbbf24'; ctx.fillRect(radius * 0.7, -radius * 0.6, radius * 0.1, radius * 0.6);
+          ctx.strokeStyle = isAttacking ? '#ff4444' : '#e2e8f0'; ctx.lineWidth = 2.5 * scale; ctx.beginPath(); ctx.moveTo(radius * 0.8, -radius * 0.3); ctx.quadraticCurveTo(radius * 2.5, -radius * 1.5, radius * 1.2, -radius * 3.5); ctx.stroke();
+        }
       }
       ctx.restore();
 
@@ -418,10 +410,6 @@ const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: st
           hatGrad.addColorStop(0, '#ffffff'); hatGrad.addColorStop(1, '#e2e8f0'); ctx.fillStyle = hatGrad; ctx.beginPath(); ctx.ellipse(0, -radius * 0.8, radius * 1.6, radius * 1.4, 0, 0, Math.PI * 2); ctx.fill();
           ctx.fillStyle = '#be123c'; ctx.beginPath(); ctx.arc(0, -radius * 1.6, radius * 0.6, 0, Math.PI, true); ctx.fill();
           ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.moveTo(0, -radius * 1.2); ctx.lineTo(radius * 0.3, -radius * 0.9); ctx.lineTo(0, -radius * 0.6); ctx.lineTo(-radius * 0.3, -radius * 0.9); ctx.closePath(); ctx.fill();
-      } else if (type === 'archer') {
-          // Janissary-style tall hat (Börk) but without the long back part for archers
-          ctx.fillStyle = '#f8fafc'; ctx.beginPath(); ctx.moveTo(-radius * 0.8, 0); ctx.lineTo(radius * 0.8, 0); ctx.lineTo(radius * 0.5, -radius * 2.2); ctx.lineTo(-radius * 0.5, -radius * 2.2); ctx.closePath(); ctx.fill();
-          ctx.fillStyle = '#fbbf24'; ctx.fillRect(-radius * 0.5, -radius * 2.4, radius * 1.0, radius * 0.2);
       } else {
           ctx.fillStyle = '#f8fafc'; ctx.beginPath(); ctx.moveTo(-radius * 1.0, -radius * 0.2); ctx.lineTo(radius * 1.0, -radius * 0.2); ctx.lineTo(radius * 0.6, -radius * 3.0); ctx.lineTo(-radius * 0.6, -radius * 3.0); ctx.closePath(); ctx.fill();
           ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, -radius * 3.0); ctx.quadraticCurveTo(radius * 0.5, -radius * 4.0, radius * 1.2, -radius * 3.5); ctx.stroke();
@@ -517,14 +505,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const projectilesRef = useRef<Projectile[]>([]);
   const garrisonsRef = useRef<Garrison[]>([]);
   const recentlyDestroyedGarrisons = useRef<Map<string, number>>(new Map());
-  const recentlyDestroyedPlayers = useRef<Map<string, number>>(new Map()); // NEW: Player tombstones
+  const recentlyDestroyedPlayers = useRef<Map<string, number>>(new Map()); // Player tombstones
   const particlesRef = useRef<Particle[]>([]);
   const pendingRecruitsRef = useRef<Set<string>>(new Set());
   const gameMapRef = useRef<{ obstacles: Obstacle[], villages: Village[], futureVillages?: Village[] }>({ obstacles: [], villages: [], futureVillages: [] });
   const caravansRef = useRef<Caravan[]>([]);
   const joystickDir = useRef<Vector>({ x: 0, y: 0 });
   const keyboardDir = useRef<Vector>({ x: 0, y: 0 });
-  const keysRef = useRef<Record<string, boolean>>({}); // NEW: Keyboard state ref
+  const keysRef = useRef<Record<string, boolean>>({}); // Keyboard state ref
   const cameraRef = useRef<Vector>({ x: 0, y: 0 });
   const mouseWorldPosRef = useRef<Vector>({ x: 0, y: 0 });
   const lastWallPosRef = useRef<Vector | null>(null);
@@ -532,11 +520,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const placementAxisRef = useRef<'x' | 'y' | null>(null);
   const buildingMapRef = useRef<Map<string, Tower>>(new Map());
   const lastGateToggleTime = useRef<number>(0);
+  const tunnelsRef = useRef<TunnelEntrance[]>([]); // NEW: Tunnels
   const [isPlacingWall, setIsPlacingWall] = useState(false);
   const [isPlacingGate, setIsPlacingGate] = useState(false);
   const [isPlacingTower, setIsPlacingTower] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [showShop, setShowShop] = useState(false); // NEW: Shop UI
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [activeSlot, setActiveSlot] = useState(0); // NEW: Minecraft-style active slot (0-8)
+  const [nearbyTunnel, setNearbyTunnel] = useState<TunnelEntrance | null>(null); // NEW: For UI interaction
   const isMouseDownRef = useRef(false);
 
   // Removed duplicate remote_gate_toggled listener - handled in main socket useEffect
@@ -554,7 +546,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const towersBuiltRef = useRef(0);
   const maxArmyRef = useRef(1);
   const killsRef = useRef(0);
-  const frameCountRef = useRef(0); // NEW: Frame counter for optimization
+  const frameCountRef = useRef(0); // Frame counter for optimization
   const [countdown, setCountdown] = useState<number | null>(null);
   const [kills, setKills] = useState(0);
   const [playerAkce, setPlayerAkce] = useState(0);
@@ -562,7 +554,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const [activePlayers, setActivePlayers] = useState(0);
   const [playerGarrisons, setPlayerGarrisons] = useState<Garrison[]>([]);
   const [activeSplitGarrisonId, setActiveSplitGarrisonId] = useState<string | null>(null);
-  const [showShop, setShowShop] = useState(false);
   const [isSpectator, setIsSpectator] = useState(false);
   const isSpectatorRef = useRef(false);
   const [isDraggingCamera, setIsDraggingCamera] = useState(false);
@@ -585,7 +576,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     const key = `${empireId}_${isCommander}_${color}_${type}`;
     if (unitSpriteCacheRef.current.has(key)) return unitSpriteCacheRef.current.get(key)!;
 
-    // FIXED: Increased canvas size (160 for units, 240 for commanders) 
+    // Increased canvas size (160 for units, 240 for commanders) 
     // to accommodate long weapons like spears and yatagans.
     const size = isCommander ? 240 : 160;
     const canvas = document.createElement('canvas');
@@ -619,7 +610,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const [isHost, setIsHost] = useState(false);
   const isHostRef = useRef(false); // NEW: Reliable host ref
   const [myId, setMyId] = useState('');
-  const myIdRef = useRef(''); // NEW: Ref for myId to avoid closure issues
+  const myIdRef = useRef(''); // Ref for myId to avoid closure issues
   useEffect(() => { myIdRef.current = myId; }, [myId]); // Sync ref
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
@@ -655,6 +646,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   useEffect(() => { currentRoomRef.current = currentRoom; }, [currentRoom]);
   useEffect(() => { lobbyPlayersRef.current = lobbyPlayers; }, [lobbyPlayers]);
   const [networkStatus, setNetworkStatus] = useState<'Connecting...' | 'Ready' | 'Error'>('Connecting...');
+  const [socketConnected, setSocketConnected] = useState<boolean>(true);
   const [lastEvent, setLastEvent] = useState<string>('Initializing...');
 
   const getKillerName = (id: string | null): string => {
@@ -682,13 +674,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     lobbyPlayersRef.current = players;
 
     // Remove players not in the room
-    for (const id of Array.from(remotePlayersRef.current.keys())) {
-      if (!currentIds.has(id)) {
-        console.log(`[SYNC DEBUG] Removing player ${id} because they are no longer in the room list.`);
-        remotePlayersRef.current.delete(id);
-        entitiesRef.current = entitiesRef.current.filter(e => e.id !== id);
+      for (const id of Array.from(remotePlayersRef.current.keys())) {
+        if (!currentIds.has(id)) {
+          remotePlayersRef.current.delete(id);
+          entitiesRef.current = entitiesRef.current.filter(e => e.id !== id);
+        }
       }
-    }
 
     // Add or Update players
     players.forEach(p => {
@@ -744,11 +735,18 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socket.on('connect', () => {
       setMyId(socket.id || '');
       setNetworkStatus('Ready');
+      setSocketConnected(true);
       setLastEvent('Connected');
+    });
+
+    socket.on('disconnect', () => {
+      setSocketConnected(false);
+      setLastEvent('Disconnected');
     });
 
     socket.on('connect_error', () => {
       setNetworkStatus('Error');
+      setSocketConnected(false);
       setLastEvent('Connection Error');
     });
 
@@ -778,6 +776,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setLastEvent('room_created');
       setCurrentRoom(room);
       currentRoomRef.current = room; // Sync ref immediately
+      (window as any).currentRoomId = room.id; // Global fallback
       const hostFlag = room.hostId === socket.id;
       setIsHost(hostFlag);
       isHostRef.current = hostFlag;
@@ -793,6 +792,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       
       // Update info on server immediately
       socket.emit('update_player_name', { roomId: room.id, name: nickname, empireId: initialEmpire.id });
+      socket.emit('request_tunnels', { roomId: room.id }); // NEW: Get tunnels on join
       
       const players = room.players || [];
       setLobbyPlayers(players);
@@ -803,6 +803,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setLastEvent('join_success');
       setCurrentRoom(roomData);
       currentRoomRef.current = roomData; // Sync ref immediately
+      (window as any).currentRoomId = roomData.id; // Global fallback
       const hostFlag = roomData.hostId === socket.id;
       setIsHost(hostFlag);
       isHostRef.current = hostFlag;
@@ -813,6 +814,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Update info on server immediately
       socket.emit('update_player_name', { roomId: roomData.id, name: nickname, empireId: initialEmpire.id });
+      socket.emit('request_tunnels', { roomId: roomData.id }); // NEW: Get tunnels on join
       
       const players = roomData.players || [];
       setLobbyPlayers(players);
@@ -926,7 +928,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('you_died', (data?: { winnerName?: string, winnerId?: string }) => {
-      console.log("[SOCKET] Received 'you_died' from server.");
       if (ENGINE_STATE === 'GAME_ACTIVE') {
         const killer = data?.winnerName && data.winnerName !== 'Enemy' ? data.winnerName : getKillerName(data?.winnerId || null);
         setMatchResult({ isWinner: false, winnerName: killer });
@@ -955,14 +956,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('player_eliminated', (data: { loserId: string, winnerId?: string, winnerName: string }) => {
-      console.log("[SOCKET DEBUG] player_eliminated:", data);
       const mySid = socketRef.current?.id || myIdRef.current;
       
-      // CRITICAL: Ensure we use the most reliable ID comparison
       const isItMe = data.loserId === mySid || (myIdRef.current && data.loserId === myIdRef.current);
 
       if (isItMe) {
-        console.log("[DEATH] Server confirmed our elimination.");
         const killer = data.winnerName && data.winnerName !== 'Enemy' ? data.winnerName : getKillerName(data.winnerId || null);
         setMatchResult({ isWinner: false, winnerName: killer });
         setKillerName(killer);
@@ -998,7 +996,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         const amIAlive = entitiesRef.current.find(e => e.id === mySidVal && e.units.length > 0);
 
         if (alivePlayers.length === 1 && amIAlive && !isSpectatorRef.current) {
-            console.log("[SOCKET DEBUG] Last man standing! Claiming victory.");
             setMatchResult({ isWinner: true, winnerName: nickname || 'You' });
             
             const endTime = Date.now();
@@ -1025,8 +1022,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('game_over_final', (data: { winnerId: string, winnerName: string }) => {
-      console.log("[SOCKET DEBUG] game_over_final:", data);
-      
       const mySid = socketRef.current?.id || myIdRef.current;
       
       // If the server says we won, OR if we are the only one left and the winner is null (Draw fallback)
@@ -1107,8 +1102,13 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       if (!bId) return;
       if (towersRef.current.some(t => String(t.id) === bId)) return;
 
-      const type = (data.type === 'WALL' || data.type === 'wall') ? 'wall' : (data.type === 'GATE' || data.type === 'gate' ? 'gate' : 'tower');
-      const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : TOWER_MAX_HP;
+      // Detect type correctly (Wall, Gate, Tower or Tunnel)
+      let type: 'wall' | 'gate' | 'tower' | 'tunnel' = 'tower';
+      if (data.type === 'WALL' || data.type === 'wall') type = 'wall';
+      else if (data.type === 'GATE' || data.type === 'gate') type = 'gate';
+      else if (data.type === 'tunnel') type = 'tunnel';
+
+      const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : (type === 'tunnel' ? 999999 : TOWER_MAX_HP);
 
       // Try to determine empireId from faction color if missing
       let bEmpireId = data.empireId;
@@ -1125,26 +1125,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         hp: data.hp || maxHp,
         maxHp: maxHp,
         lastShot: 0,
-        type: type,
+        type: type as any,
         empireId: bEmpireId || 'neutral',
         rotation: data.rotation || 0,
         isOpen: !!data.isOpen
-      });
-    });
-
-    socket.on('remote_tower_fire', (data: any) => {
-      const ang = Math.atan2(data.targetY - data.startY, data.targetX - data.startX);
-      // Remote tower fire needs to retain the actual ownerId to attribute kills properly
-      projectilesRef.current.push({
-        id: 'tower-fire-' + generateId(),
-        ownerId: data.ownerId || 'remote', // Changed from towerId to ownerId based on emit
-        pos: { x: data.startX, y: data.startY },
-        vel: { x: Math.cos(ang) * PROJECTILE_SPEED, y: Math.sin(ang) * PROJECTILE_SPEED },
-        life: 1.0,
-        damage: 60,
-        color: data.color || '#fbbf24',
-        empireId: data.empireId || 'neutral',
-        targetPos: { x: data.targetX, y: data.targetY }
       });
     });
 
@@ -1174,13 +1158,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     });
     
-    // NEW HANDLER FOR GARRISON HIT
     socket.on('remote_garrison_hit', (data: any) => {
         const g = garrisonsRef.current.find(g => g.id === data.garrisonId);
         
         // Only apply damage if I AM THE OWNER of this garrison
         if (g && g.ownerId === myId && g.units.length > 0) {
-            // GLOBAL DAMAGE COOLDOWN FOR TARGET
+            // Damage cooldown for target
             const now = Date.now();
             if (now - (g.lastDamageTime || 0) < 150) return; 
             g.lastDamageTime = now;
@@ -1207,21 +1190,21 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('take_unit_damage', (data: any) => {
-      // CRITICAL FIX: Ignore damage from "ghosts" (entities we already killed locally)
+      // Ignore damage from "ghosts" (entities we already killed locally)
       if (data.attackerId && recentlyDestroyedPlayers.current.has(data.attackerId)) {
-          console.log(`[SYNC] Blocking damage from tombstoned player: ${data.attackerId}`);
           return;
       }
       if (data.attackerGarrisonId && recentlyDestroyedGarrisons.current.has(data.attackerGarrisonId)) {
-          console.log(`[SYNC] Blocking damage from tombstoned garrison: ${data.attackerGarrisonId}`);
           return;
       }
+
+      // NEW: Underground units take no damage from surface attacks
+      const p = playerRef.current;
+      if (p && p.isUnderground && !data.isUndergroundAttack) return;
 
       if (data.garrisonId) {
           const g = garrisonsRef.current.find(g => g.id === data.garrisonId);
           if (g && g.ownerId === myId && g.units.length > 0) {
-              // REMOVED: 150ms cooldown. The attacker now controls the hit rate.
-              
               const damage = data.damage || 34;
               if (data.isFatal || damage >= 1000) {
                   g.units = [];
@@ -1246,12 +1229,32 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
           const p = playerRef.current;
           if (p && p.units.length > 0) {
-            // REMOVED: Victim-side validation as it causes HP desync.
+            // VERIFY DISTANCE ON VICTIM SIDE (Prevent lag-hits from afar)
+            // If the attacker is another player or AI, we check if they are actually close enough on OUR screen.
+            if (data.attackerId && data.attackerId !== myId) {
+                let attackerPos: Vector | null = null;
+                
+                if (data.attackerGarrisonId) {
+                    const g = garrisonsRef.current.find(gr => gr.id === data.attackerGarrisonId);
+                    if (g) attackerPos = g.pos;
+                } else {
+                    const ent = entitiesRef.current.find(e => e.id === data.attackerId);
+                    if (ent && ent.units.length > 0) attackerPos = ent.units[0].pos;
+                }
+                
+                if (attackerPos) {
+                    const dist = getDistance(p.units[0].pos, attackerPos);
+                    // Maximum engagement range is ~60px + unit radius. 
+                    // Allow some buffer (e.g., 180px) for high-speed dashes and network jitter.
+                    if (dist > 180) {
+                        return; // Discard damage if attacker is too far on our screen
+                    }
+                }
+            }
+
             // The attacker is the authority for melee hits to ensure "what you see is what you hit".
             
-            // REMOVED: 750ms global cooldown. The attacker now controls the hit rate.
-            
-            // FIXED: If no specific unit index is provided, target the LAST unit (non-commander) first.
+            // If no specific unit index is provided, target the LAST unit (non-commander) first.
             // This prevents instant commander death when the army is still large.
             let idx = data.unitIndex;
             if (idx === undefined) {
@@ -1265,7 +1268,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 if (targetUnit.hp <= 0) {
                     if (p.units.length === 1) {
                         // Commander is dying
-                        console.log("[DEATH DEBUG] Commander hit 0 HP. Triggering UI.");
                         
                         // Send death event to server so others know
                         socketRef.current?.emit('commander_death_detected', { 
@@ -1419,12 +1421,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('update_rematch_votes', (data) => {
-      console.log("[SOCKET DEBUG] Received update_rematch_votes:", data);
       setVoteCount({ voted: data.votedPlayers, total: data.maxPlayers });
     });
 
     socket.on('rematch_started', (roomData) => {
-      console.log("[SOCKET DEBUG] SERVER COMMAND: Rematch! Resetting to lobby...");
       setVoteCount({ voted: 0, total: 0 }); 
       setHasVoted(false);
       setCurrentRoom(roomData); 
@@ -1435,6 +1435,32 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       ENGINE_STATE = 'LOBBY_WAITING'; 
       gameStateRef.current = 'LOBBY_WAITING';
       startLobbyArena(roomData.players || []);
+    });
+
+    socket.on('remote_tunnel_update', (data: any) => {
+      console.log("RECEIVED REMOTE TUNNEL UPDATE:", data);
+      
+      // If we receive a tunnel from the server, we MUST ensure it's added.
+      // We will re-assign the entire array to trigger any necessary React state updates (though it's a ref, it's safer for the render loop).
+      const existingIdx = tunnelsRef.current.findIndex(t => t.id === data.id);
+      
+      if (existingIdx !== -1) {
+        tunnelsRef.current[existingIdx] = data;
+      } else {
+        tunnelsRef.current.push(data);
+      }
+    });
+
+    socket.on('remote_tunnel_remove', (data: { id: string }) => {
+      console.log("RECEIVED REMOTE TUNNEL REMOVE:", data.id);
+      tunnelsRef.current = tunnelsRef.current.filter(t => t.id !== data.id);
+    });
+
+    socket.on('sync_tunnels', (data: { tunnels: TunnelEntrance[] }) => {
+      console.log("SYNC TUNNELS RECEIVED FROM SERVER:", data.tunnels);
+      if (data.tunnels && Array.isArray(data.tunnels)) {
+        tunnelsRef.current = data.tunnels;
+      }
     });
 
     socket.on('start_game', (data: { seed: number, players: Entity[] }) => {
@@ -1460,48 +1486,50 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     socket.on('remote_update', (data: any) => {
       if (!data || !data.id) return;
-      const mySid = socketRef.current?.id || myId;
-      if (data.id === mySid) return;
+      
+      const pid = data.id;
+      const isItMe = pid === socket.id || pid === myId;
+
+      if (isItMe) return;
 
       // FIXED: Block updates for players who were recently killed locally
-      if (recentlyDestroyedPlayers.current.has(data.id)) {
-        const timeSinceDeath = Date.now() - (recentlyDestroyedPlayers.current.get(data.id) || 0);
-        if (timeSinceDeath < 10000) return; // 10s protection
-        else recentlyDestroyedPlayers.current.delete(data.id);
+      if (recentlyDestroyedPlayers.current.has(pid)) {
+        const timeSinceDeath = Date.now() - (recentlyDestroyedPlayers.current.get(pid) || 0);
+        if (timeSinceDeath < 10000) return; 
+        else recentlyDestroyedPlayers.current.delete(pid);
       }
 
-      // IMMEDIATE REMOVAL on leave signal
       if (data.isLeaving) {
-        entitiesRef.current = entitiesRef.current.filter(e => e.id !== data.id);
-        remotePlayersRef.current.delete(data.id);
+        entitiesRef.current = entitiesRef.current.filter(e => e.id !== pid);
+        remotePlayersRef.current.delete(pid);
         setLobbyPlayers(prev => {
-            const next = prev.filter(p => p.id !== data.id);
+            const next = prev.filter(p => p.id !== pid);
             lobbyPlayersRef.current = next;
             return next;
         });
         return;
       }
 
-      const idx = entitiesRef.current.findIndex(e => e.id === data.id);
+      let idx = entitiesRef.current.findIndex(e => e.id === pid);
       
       const realPos: Vector = { x: data.x || 0, y: data.y || 0 };
       const realAngle: number = data.rotation || 0;
 
       if (idx !== -1) {
         const ent = entitiesRef.current[idx];
-        ent.targetAngle = realAngle; // Set target instead of immediate
-        ent.targetPos = { ...realPos }; // Set target instead of immediate
+        ent.targetAngle = realAngle; 
+        ent.targetPos = { ...realPos }; 
+        ent.lastUpdate = Date.now(); 
         ent.akce = data.akce;
-        ent.name = data.name || ent.name; // Sync name from data packet
+        ent.name = data.name || ent.name; 
         
-        // SYNC SKIN IN LOBBY
         if (data.empireId || data.faction || data.name) {
           const currentEmpire = data.empireId || ent.empireId;
           const currentFaction = data.faction || ent.color;
           const currentName = data.name || ent.name;
           
-          if (data.id) {
-            playerSkinsRef.current.set(data.id, { 
+          if (pid) {
+            playerSkinsRef.current.set(pid, { 
               empireId: currentEmpire as EmpireType, 
               faction: currentFaction,
               name: currentName
@@ -1523,8 +1551,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           else if (data.faction === '#1e3a8a') ent.empireId = 'rim';
           else if (data.faction === '#1e40af') ent.empireId = 'fim';
           
-          if (ent.empireId !== 'neutral' && data.id) {
-            playerSkinsRef.current.set(data.id, { 
+          if (ent.empireId !== 'neutral' && pid) {
+            playerSkinsRef.current.set(pid, { 
               empireId: ent.empireId as EmpireType, 
               faction: ent.color 
             });
@@ -1534,25 +1562,22 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ent.score = data.unitCount || 1;
         ent.isDashing = data.isDashing;
         ent.isAttacking = data.isAttacking;
+        ent.isUnderground = data.isUnderground; 
+        if (data.equippedItem) ent.equippedItem = data.equippedItem; // NEW
         
         if (ent.units.length > 0) {
-          // ent.units[0].pos = { ...realPos }; // MOVED TO UPDATE LOOP INTERPOLATION
           ent.units[0].hp = data.hp || 100;
           
-          // Recruitment Sync: Remove neutrals that were recruited by others
           if (data.recruitedIds && Array.isArray(data.recruitedIds)) {
             data.recruitedIds.forEach((rid: string) => {
               neutralsRef.current = neutralsRef.current.filter(n => n.id !== rid);
             });
           }
           
-          // Re-sync unit count if necessary (Strict reconciliation)
           if (data.unitCount !== undefined) {
             const currentCount = ent.units.length;
             
             if (data.unitCount > currentCount) {
-              // The owner says they have more units than we see locally.
-              // Restore units ONLY if enough time has passed since our last local kill
               const timeSinceKill = Date.now() - (ent.lastDamageTime || 0);
               if (timeSinceKill > 2000) { 
                   const diff = data.unitCount - currentCount;
@@ -1561,78 +1586,59 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   }
               }
             } else if (data.unitCount < currentCount) {
-              // FORCED SYNC: If the owner says they have FEWER units, 
-              // we MUST remove them locally to match the "Truth".
               ent.units = ent.units.slice(0, data.unitCount);
             }
             ent.lastKnownUnitCount = data.unitCount;
           }
         }
         
-        // SYNC REMOTE GARRISONS (Detached Squads)
         if (data.garrisons && Array.isArray(data.garrisons)) {
           data.garrisons.forEach((rg: any) => {
-            const existing = garrisonsRef.current.find(g => g.id === rg.id && g.ownerId === data.id);
+            const existing = garrisonsRef.current.find(g => g.id === rg.id && g.ownerId === pid);
             if (existing) {
-              // Smooth update: save new pos as target, keep current pos for interpolation
               existing.lastSyncPos = { ...rg.pos };
+              existing.lastUpdate = Date.now(); 
               existing.mode = rg.mode;
-              existing.targetPos = rg.targetPos; // SYNC TARGET POS FOR PREDICTION
+              existing.targetPos = rg.targetPos; 
               existing.attackTimer = rg.attackTimer || 0;
+              existing.isUnderground = rg.isUnderground; // NEW: Sync layer
               
-              // Sync unit count (Strict reconciliation for garrisons)
               const currentGCount = existing.units.length;
               if (existing.lastKnownUnitCount === undefined) existing.lastKnownUnitCount = currentGCount;
               const maxSeen = existing.lastKnownUnitCount;
               
-              // CRITICAL FIX: If we have already marked this garrison as dead locally, 
-              // ignore ANY attempts by the owner to increase its count
               const isTombstoned = recentlyDestroyedGarrisons.current.has(existing.id);
               
               if (!isTombstoned) {
                   if (rg.unitCount > maxSeen) {
-                      // Grow only if owner recruited
                       const realNewUnits = rg.unitCount - maxSeen;
-                      console.log(`[GARRISON DEBUG] Remote garrison ${existing.id} recruited ${realNewUnits} units. (Packet: ${rg.unitCount}, MaxSeen: ${maxSeen})`);
                       for (let i = 0; i < realNewUnits; i++) {
                           existing.units.push({ id: generateId('ru'), pos: existing.pos, color: rg.color, type: 'infantry', hp: 100 });
                       }
                       existing.lastKnownUnitCount = rg.unitCount;
                   } else if (rg.unitCount < maxSeen) {
-                      // Owner acknowledged deaths
                       if (rg.unitCount < currentGCount) {
                           existing.units = existing.units.slice(0, rg.unitCount);
                       }
                       existing.lastKnownUnitCount = rg.unitCount;
-                  } else if (rg.unitCount === maxSeen && rg.unitCount > currentGCount) {
-                      // CRITICAL: Packet matches maxSeen, but we have local kills. 
-                      // DO NOT RESTORE UNITS.
-                      console.log(`[SYNC] Blocking unit restoration for garrison ${existing.id}. Packet: ${rg.unitCount}, Local: ${currentGCount}`);
                   }
               }
-              // If rg.unitCount === maxSeen but > existing.units.length, ignore (local kill pending sync)
-
-              // REMOVED: Immediate unit position update. Let the update loop handle interpolation 
-              // to prevent "krakozyabry" (jumping/glitching units).
             } else {
-              // Add new remote garrison
-              // CRITICAL: Prevent resurrection of recently killed garrisons
               const tombstone = recentlyDestroyedGarrisons.current.get(rg.id);
               if (tombstone) {
                   const timeSinceDeath = Date.now() - tombstone;
-                  if (timeSinceDeath < 20000) return; // 20s protection for garrisons
+                  if (timeSinceDeath < 20000) return; 
                   else recentlyDestroyedGarrisons.current.delete(rg.id);
               }
 
               const newGarrison: Garrison = {
                 id: rg.id || generateId('rg'),
-                ownerId: data.id,
+                ownerId: pid,
                 pos: { ...rg.pos },
                 lastSyncPos: { ...rg.pos },
-                lastKnownUnitCount: rg.unitCount, // Initialize sync count
+                lastKnownUnitCount: rg.unitCount, 
                 mode: rg.mode,
                 units: Array(rg.unitCount).fill(0).map((_, i) => {
-                    // MATCHING OWNER FORMATION: 4-column wide squad
                     const row = Math.floor(i / 4), col = i % 4; 
                     const ox = (col - 1.5) * 35, oy = (row + 1) * 35;
                     return {
@@ -1649,26 +1655,21 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 attackCooldown: 0,
                 targetPos: rg.targetPos || rg.pos,
                 justSplit: false,
-                isLocal: false
+                isLocal: false,
+                isUnderground: rg.isUnderground // NEW: Sync layer
               };
               garrisonsRef.current.push(newGarrison);
             }
           });
 
-          // Cleanup: remove garrisons that were not in the update packet for this player
           const updatedIds = new Set(data.garrisons.map((rg: any) => rg.id));
           garrisonsRef.current = garrisonsRef.current.filter(g => {
-            if (g.ownerId !== data.id || g.isLocal) return true; // Keep local or other players' garrisons
+            if (g.ownerId !== pid || g.isLocal) return true; 
             
-            // If it's a remote garrison of THIS player and it's NOT in the update packet
             if (!updatedIds.has(g.id)) {
-                // If we recently destroyed it, that's fine, it should be removed.
-                // If we DIDN'T destroy it, the owner removed it (e.g. recalled or they died).
                 return false; 
             }
             
-            // FIXED: Re-enabled tombstone check for existing garrisons.
-            // If it IS in the packet, but we tombstoned it, force remove it locally
             if (recentlyDestroyedGarrisons.current.has(g.id)) {
                 return false;
             }
@@ -1677,12 +1678,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           });
         }
 
-        // SYNC CARAVANS (Host only sends, clients receive)
         if (isHostRef.current && data.caravanEscortRequest) {
             const c = caravansRef.current.find(c => c.id === data.caravanEscortRequest);
             if (c && !c.escortOwnerId) {
-                console.log(`[CARAVAN] Host accepted escort request for ${c.id} by ${data.id}`);
-                c.escortOwnerId = data.id;
+                c.escortOwnerId = pid;
                 c.escortTimer = 5;
                 c.lastAkceTime = Date.now();
                 c.outOfCircleTime = 0;
@@ -1729,7 +1728,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (!isInRoom) {
           // If they aren't in the room list, they should NOT be in entitiesRef or remotePlayersRef either
           if (remotePlayersRef.current.has(data.id)) {
-            console.log(`[SYNC DEBUG] Discarding remote_update for player ${data.id} and cleaning up.`);
             remotePlayersRef.current.delete(data.id);
             entitiesRef.current = entitiesRef.current.filter(e => e.id !== data.id);
           }
@@ -1795,7 +1793,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('player_left', (playerId: string) => {
-      console.log(`[SOCKET DEBUG] player_left: ${playerId}`);
       // Remove from all local collections immediately
       entitiesRef.current = entitiesRef.current.filter(e => e.id !== playerId);
       remotePlayersRef.current.delete(playerId);
@@ -2039,7 +2036,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       attackTimer: 0,
       attackCooldown: 0,
       justSplit: true,
-      isLocal: ent.id === myId
+      isLocal: ent.id === myId,
+      isUnderground: ent.isUnderground // Inherit layer
     };
     garrisonsRef.current.push(newGarrison);
 
@@ -2097,7 +2095,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             attackTimer: 0,
             attackCooldown: 0,
             justSplit: true,
-            isLocal: true
+            isLocal: true,
+            isUnderground: p.isUnderground // Inherit layer
         };
         garrisonsRef.current.push(newGarrison);
         setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
@@ -2277,12 +2276,61 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       else keyboardDir.current = { x: 0, y: 0 };
 
       if (keys['Space'] && playerRef.current && playerRef.current.attackCooldown <= 0) {
-        playerRef.current.isAttacking = true;
-        playerRef.current.attackTimer = 300;
-        playerRef.current.attackCooldown = 500;
-        playerRef.current.swingKills = 0; // Reset swing kills
-        if (socketRef.current && currentRoom) {
-          socketRef.current.emit('attack', { roomId: currentRoom.id });
+        const p = playerRef.current;
+        if (p.equippedItem === 'shovel' || p.equippedItem === 'super_shovel') {
+          // Digging mechanic
+          if (p.shovelUses && p.shovelUses > 0) {
+            p.shovelUses -= 1;
+            p.attackTimer = 300;
+            p.attackCooldown = 500;
+            createDust(p.units[0].pos.x, p.units[0].pos.y, '#78350f'); // Dirt color
+            
+            if (p.shovelUses <= 0) {
+              p.equippedItem = 'sword'; // Break shovel
+              p.shovelUses = 0;
+            }
+
+            // Create tunnel as a building using flat x,y for server compatibility
+            const newTunnelObj = {
+              id: generateId('tunnel'),
+              type: 'tunnel',
+              x: p.units[0].pos.x,
+              y: p.units[0].pos.y,
+              ownerId: p.id,
+              faction: p.color,
+              hp: 999999
+            };
+            
+            // OPTIMISTIC UPDATE: Add to towersRef (the common building array)
+            towersRef.current.push({
+                id: newTunnelObj.id,
+                ownerId: p.id,
+                pos: { x: newTunnelObj.x, y: newTunnelObj.y },
+                color: p.color,
+                hp: 999999,
+                maxHp: 999999,
+                lastShot: 0,
+                type: 'tunnel' as any,
+                empireId: p.empireId,
+                rotation: 0,
+                isOpen: false
+            });
+            
+            if (socketRef.current) {
+              const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
+              console.log("EMITTING TUNNEL TO SERVER:", currentRoomId, newTunnelObj);
+              socketRef.current.emit('building_placed', { roomId: currentRoomId, ...newTunnelObj });
+            }
+          }
+        } else {
+          // Sword Attack
+          p.isAttacking = true;
+          p.attackTimer = 300;
+          p.attackCooldown = 500;
+          p.swingKills = 0; // Reset swing kills
+          if (socketRef.current && currentRoom) {
+            socketRef.current.emit('attack', { roomId: currentRoom.id });
+          }
         }
       }
 
@@ -2290,10 +2338,27 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         splitSwarm(playerRef.current);
       }
 
-      // NEW HOTKEYS
     if (keys['KeyE'] && gameState === 'GAME_ACTIVE') {
       setShowShop(prev => !prev);
+      keys['KeyE'] = false; // Prevent multiple toggles
     }
+
+    // Slot selection 1-9
+    for (let i = 1; i <= 9; i++) {
+      if (keys[`Digit${i}`] && gameState === 'GAME_ACTIVE') {
+        const slot = i - 1;
+        setActiveSlot(slot);
+        
+        const p = playerRef.current;
+        if (p) {
+          if (slot === 0) p.equippedItem = 'sword';
+          else if (slot === 1 && p.shovelUses && p.shovelUses > 0) p.equippedItem = (p.shovelUses > 10 || p.shovelUses === 30) ? 'super_shovel' : 'shovel';
+          else p.equippedItem = 'sword';
+        }
+        keys[`Digit${i}`] = false;
+      }
+    }
+
     if (keys['KeyC']) {
       if (activeSplitGarrisonId) {
         setActiveSplitGarrisonId(null);
@@ -2331,6 +2396,32 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       window.removeEventListener('keyup', hku);
     };
   }, [splitSwarm, gameState, currentRoom]); // Added currentRoom to re-bind when room info is available for attacks
+
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (ENGINE_STATE !== 'GAME_ACTIVE') return;
+      
+      setActiveSlot(prev => {
+        let next = e.deltaY > 0 ? prev + 1 : prev - 1;
+        if (next > 8) next = 0;
+        if (next < 0) next = 8;
+        
+        // Sync equipped item based on slot
+        const p = playerRef.current;
+        if (p) {
+          if (next === 0) p.equippedItem = 'sword';
+          else if (next === 1 && p.shovelUses && p.shovelUses > 0) p.equippedItem = (p.shovelUses > 10 || p.shovelUses === 30) ? 'super_shovel' : 'shovel'; // simplified logic for now
+          else p.equippedItem = 'sword'; // empty slots act like sword for now
+        }
+        
+        return next;
+      });
+    };
+    
+    // OPTIMIZATION: Passive event listener for scroll to prevent FPS drops
+    window.addEventListener('wheel', handleWheel, { passive: true });
+    return () => window.removeEventListener('wheel', handleWheel);
+  }, []);
 
   const createDust = (x: number, y: number, color: string) => {
     for (let i = 0; i < 6; i++) particlesRef.current.push({ pos: { x, y }, vel: { x: (Math.random()-0.5)*4, y: (Math.random()-0.5)*4 }, life: 1, maxLife: 1, color, type: 'dust' });
@@ -2453,6 +2544,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const tryPlaceBuilding = useCallback((worldX: number, worldY: number) => {
     if (gameState !== 'GAME_ACTIVE' || !playerRef.current || isSpectatorRef.current) return;
     if (!isPlacingWall && !isPlacingGate && !isPlacingTower) return;
+
+    // NEW: Restriction - No building underground
+    if (playerRef.current?.isUnderground) {
+      showError(t.cantBuildUnderground || "Can't build underground!");
+      setIsPlacingWall(false);
+      setIsPlacingGate(false);
+      setIsPlacingTower(false);
+      return;
+    }
 
     let targetX = worldX;
     let targetY = worldY;
@@ -2704,7 +2804,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           
           // Remove from local list immediately
           towersRef.current.splice(clickedBuildingIdx, 1);
-          console.log(`[SELL] Sold ${b.type} ${b.id} for ${refund} Akçe`);
           return;
         }
       }
@@ -2961,15 +3060,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
   const lastFrameTimeRef = useRef<number>(performance.now());
   const update = useCallback(() => {
-    if (ENGINE_STATE !== 'GAME_ACTIVE' && ENGINE_STATE !== 'LOBBY_WAITING') {
+    try {
+        if (ENGINE_STATE !== 'GAME_ACTIVE' && ENGINE_STATE !== 'LOBBY_WAITING') {
       frameId.current = requestAnimationFrame(update);
-      lastFrameTimeRef.current = performance.now();
       return;
     }
 
-    const now_frame = performance.now();
-    const dt = Math.min(now_frame - lastFrameTimeRef.current, 100); // Cap dt at 100ms to avoid huge jumps
-    lastFrameTimeRef.current = now_frame;
+    const dt = 16.67; // Fixed step (60 FPS)
+    const dt_scale = 1; // Fixed scale for original speed
 
     const p = playerRef.current;
     
@@ -2979,7 +3077,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         const localEnt = entitiesRef.current.find(e => e.id === sid);
         if (localEnt) {
             playerRef.current = localEnt;
-            console.log("[INPUT DEBUG] Re-synced playerRef to local entity:", sid);
         }
     }
 
@@ -2992,8 +3089,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (shakeRef.current > 0) shakeRef.current *= 0.9;
     frameCountRef.current++; // Increment frame counter
     
-    const dt_scale = dt / 16.67; // Normalize to 60FPS baseline for original speed balance
-
     // 1. State & Cooldowns (all entities)
     entitiesRef.current.forEach(ent => {
         if (ent.units.length === 0) return;
@@ -3094,7 +3189,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 else if (joystickDir.current.x !== 0 || joystickDir.current.y !== 0) targetVel = { ...joystickDir.current };
             }
         } else if (ent.type === 'ai' && !isMultiplayer) {
-            // OPTIMIZATION: Throttle AI decision making (every 10 frames)
+            // Throttle AI decision making (every 10 frames)
             const shouldDecide = (frameCountRef.current + ent.units.length) % 10 === 0;
             
             if (ent.panicTimer && ent.panicTimer > 0) {
@@ -3190,20 +3285,62 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             let diff = targetAngle - (ent.facingAngle || 0);
             while (diff < -Math.PI) diff += Math.PI * 2;
             while (diff > Math.PI) diff -= Math.PI * 2;
-            // FIXED: Reverting to mass-based inertia as requested by user.
-            // Larger armies now turn slower again.
             ent.facingAngle = (ent.facingAngle || 0) + diff * (0.15 / inertia) * dt_scale;
         }
 
+        // Tunnel Entrance Interaction
+        if (ent.id === sid) {
+            let foundTunnel: any = null;
+            // Now look for tunnels inside towers array
+            towersRef.current.forEach(b => {
+                if (b.type === ('tunnel' as any) && getDistance(head.pos, b.pos) < 120) {
+                    foundTunnel = b;
+                }
+            });
+
+            // Enter/Exit via 'F'
+            const isFPressedLocal = keysRef.current['f'] || keysRef.current['F'] || keysRef.current['KeyF'];
+            const isRPressedLocal = keysRef.current['r'] || keysRef.current['R'] || keysRef.current['KeyR'];
+            
+            if (foundTunnel && isFPressedLocal) {
+                if (!ent.lastTunnelToggle || Date.now() - ent.lastTunnelToggle > 800) {
+                    ent.isUnderground = !ent.isUnderground;
+                    ent.lastTunnelToggle = Date.now();
+                    createDust(head.pos.x, head.pos.y, '#78350f');
+                    if (keysRef.current['f']) keysRef.current['f'] = false;
+                    if (keysRef.current['F']) keysRef.current['F'] = false;
+                    if (keysRef.current['KeyF']) keysRef.current['KeyF'] = false;
+                }
+            }
+
+            // Hide/Destroy via 'R' (Only if owner)
+            const isOwner = foundTunnel && (foundTunnel.ownerId === myId || foundTunnel.ownerId === playerRef.current?.id);
+            if (foundTunnel && isOwner && isRPressedLocal) {
+                const tid = foundTunnel.id;
+                towersRef.current = towersRef.current.filter(b => b.id !== tid);
+                
+                if (socketRef.current) {
+                    const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
+                    console.log("EMITTING TUNNEL DESTROY:", tid);
+                    socketRef.current.emit('building_destroyed', { roomId: currentRoomId, buildingId: tid });
+                }
+                if (keysRef.current['r']) keysRef.current['r'] = false;
+                if (keysRef.current['R']) keysRef.current['R'] = false;
+                if (keysRef.current['KeyR']) keysRef.current['KeyR'] = false;
+            }
+        }
+
         if (ent.id === myId || (socketRef.current?.id && ent.id === socketRef.current.id)) {
-            // Player-specific move speed with "Combat Charge"
             let finalSpd = spd * dt_scale;
             if (ent.isAttacking && ent.cachedMinDist && ent.cachedMinDist < 150) {
-                // Charge! 25% speed boost when closing in on a target
                 finalSpd *= 1.25;
             }
             
-            const nextPos = resolveCollision(head.pos, { x: ent.velocity.x * finalSpd, y: ent.velocity.y * finalSpd }, gameMapRef.current.obstacles, towersRef.current);
+            // Underground players ignore obstacles and towers
+            const obstaclesToUse = ent.isUnderground ? [] : gameMapRef.current.obstacles;
+            const towersToUse = ent.isUnderground ? [] : towersRef.current;
+            
+            const nextPos = resolveCollision(head.pos, { x: ent.velocity.x * finalSpd, y: ent.velocity.y * finalSpd }, obstaclesToUse, towersToUse);
             if (nextPos.x > 0 && nextPos.x < currentWorldSize) head.pos.x = nextPos.x;
             if (nextPos.y > 0 && nextPos.y < currentWorldSize) head.pos.y = nextPos.y;
         } else if (ent.type === 'ai' && !isMultiplayer) {
@@ -3276,7 +3413,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 g.pos.x += (g.lastSyncPos.x - g.pos.x) * lerpSpd;
                 g.pos.y += (g.lastSyncPos.y - g.pos.y) * lerpSpd;
 
-                // FIXED: DEAD RECKONING (Prediction)
+                // Dead Reckoning (Prediction)
                 // If we have a targetPos from the owner, move locally towards it 
                 // between sync packets to ensure absolute smoothness.
                 if (g.targetPos && (g.mode === 'HUNT' || g.mode === 'RECALL')) {
@@ -3295,7 +3432,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             }
             
             // Sync unit positions to the interpolated g.pos
-            // FIXED: Remote units MUST use the same formation logic as the owner
+            // Remote units MUST use the same formation logic as the owner
             const isMoving = g.mode !== 'HOLD';
             const lerpSpeed = isMoving ? 0.025 : 0.01;
             const unitLerp = 1 - Math.exp(-lerpSpeed * dt);
@@ -3317,7 +3454,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' });
         }
 
-        // OPTIMIZATION: Throttle heavy AI/Detection logic (every 10 frames for each garrison)
+        // Throttle heavy AI/Detection logic (every 10 frames for each garrison)
         // Ensure idx is defined by checking the forEach signature above
         let shouldRunHeavyLogic = (frameCountRef.current + (idx || 0)) % 10 === 0;
 
@@ -3436,7 +3573,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     }
                 }
                 
-                if (g.mode === 'HUNT' && dist < 120 && g.attackCooldown <= 0) {
+                if (g.mode === 'HUNT' && dist < 85 && g.attackCooldown <= 0) {
                     g.attackTimer = 350;
                     g.attackCooldown = 700;
                     g.swingKills = 0;
@@ -3547,7 +3684,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (ENGINE_STATE === 'GAME_ACTIVE') {
       // Neutral Recruitment
       entitiesRef.current.forEach(ent => {
-        if (ent.units.length === 0) return;
+        if (ent.units.length === 0 || ent.isUnderground) return; // NEW: Underground can't recruit surface neutrals
         const head = ent.units[0];
         const gx = Math.floor(head.pos.x / GRID_CELL_SIZE);
         const gy = Math.floor(head.pos.y / GRID_CELL_SIZE);
@@ -3580,7 +3717,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (e1.units.length === 0) return;
         
         const isOwner = e1.id === myId || (socketRef.current?.id && e1.id === socketRef.current.id);
-        const shouldCalculate = isOwner || (!isMultiplayer && e1.type === 'ai') || (isMultiplayer && isHost && e1.type === 'ai');
+        const shouldCalculate = isOwner || (!isMultiplayer && e1.type === 'ai') || (isMultiplayer && isHostRef.current && e1.type === 'ai');
         if (!shouldCalculate) return;
 
         // OPTIMIZATION: Throttle "nearby enemies" check (every 10 frames)
@@ -3642,6 +3779,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 let targetObj = isTargetGarrison ? garrisonMap.get(n.entityId.substring(2)) : entityMap.get(n.entityId);
                 if (!targetObj) continue;
 
+                // NEW: Layer Isolation for Combat
+                if (e1.isUnderground !== targetObj.isUnderground) continue;
+
                 // FIXED: Only explicit attack triggers damage for players. AI still has auto-attack.
                 const isAI = e1.type === 'ai';
                 const isActive = e1.isAttacking && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
@@ -3678,7 +3818,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           damage: damageVal, 
                           attackerId: myId,
                           attackerName: nickname, // Always send our name
-                          garrisonId: isTargetGarrison ? n.entityId.substring(2) : undefined 
+                          garrisonId: isTargetGarrison ? n.entityId.substring(2) : undefined,
+                          isUndergroundAttack: e1.isUnderground // NEW: Sync underground status
                       });
                   }
                   
@@ -3697,7 +3838,23 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                       }
                       
                       e1.swingKills = (e1.swingKills || 0) + 1;
-                      e1.akce += 5; if (e1.id === myId) { killsRef.current++; setKills(k => k + 1); setPlayerAkce(e1.akce); }
+                      // "Hunting" reward: Killing neutrals (Holops) gives more than regular kills
+                      const reward = (n.entityId === 'neutral') ? 15 : 5;
+                      e1.akce += reward; 
+                      if (e1.id === myId) { 
+                        killsRef.current++; 
+                        setKills(k => k + 1); 
+                        setPlayerAkce(e1.akce); 
+                        if (reward > 5) {
+                          // Visual indicator for "Hunting" success
+                          particlesRef.current.push({
+                            pos: { ...n.unit.pos },
+                            vel: { x: 0, y: -2 },
+                            life: 1, maxLife: 1, color: '#fbbf24', type: 'text',
+                            text: `+${reward} ${t.huntReward || 'HUNT'}`
+                          });
+                        }
+                      }
                       createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
                   }
                 }
@@ -3791,6 +3948,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 let targetObj = isTargetGarrison ? garrisonMap.get(n.entityId.substring(2)) : entityMap.get(n.entityId);
                 if (!targetObj) continue;
 
+                // NEW: Layer Isolation for Combat
+                if (g.isUnderground !== targetObj.isUnderground) continue;
+
                 const isTargetCmd = !isTargetGarrison && entityMap.get(n.entityId)?.units[0] === n.unit;
                 const amIAttacker = g.ownerId === myId, amIDefender = tOwnerId === myId;
                 
@@ -3830,10 +3990,19 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           damage: damageVal, 
                           attackerId: g.ownerId, 
                           attackerName: g.name || 'Garrison',
-                          attackerGarrisonId: g.id 
+                          attackerGarrisonId: g.id,
+                          isUndergroundAttack: g.isUnderground // NEW: Sync underground status
                       });
                     } else {
-                      socketRef.current?.emit('garrison_hit', { roomId: currentRoomRef.current?.id, targetPlayerId: tOwnerId, damage: damageVal, garrisonId: n.entityId.substring(2), attackerId: g.ownerId, attackerGarrisonId: g.id });
+                      socketRef.current?.emit('garrison_hit', { 
+                          roomId: currentRoomRef.current?.id, 
+                          targetPlayerId: tOwnerId, 
+                          damage: damageVal, 
+                          garrisonId: n.entityId.substring(2), 
+                          attackerId: g.ownerId, 
+                          attackerGarrisonId: g.id,
+                          isUndergroundAttack: g.isUnderground // NEW: Sync underground status
+                      });
                     }
                   }
                   
@@ -3935,7 +4104,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   // SERVER SYNC: Any client that detects a commander death should report it.
                   if (ui === 0 && e.units.length === 1) {
-                      console.log(`[DEATH] Detected death of ${e.id} via projectile.`);
                       socketRef.current?.emit('commander_death_detected', { 
                         roomId: currentRoomRef.current?.id, 
                         winnerId: pr.ownerId === 'remote'?null:pr.ownerId, 
@@ -3999,7 +4167,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               if (isAttacker) {
                   t.hp = Math.max(0, t.hp - 1); 
                   createDust(t.pos.x, t.pos.y, t.color);
-                  console.log(`[TOWER HIT] Authoritative Tower ${t.id} HP: ${t.hp}/5`);
                   
                   // Sync hit to everyone else
                   socketRef.current?.emit('building_hit', { 
@@ -4042,7 +4209,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         const shouldCalculate = isOwner || (!isMultiplayer && (t.ownerId === 'ai' || !t.ownerId)) || (isMultiplayer && isHostRef.current && (t.ownerId === 'ai' || !t.ownerId));
         if (!shouldCalculate) continue;
 
-        if (t.type !== 'wall' && t.type !== 'gate' && Date.now() - t.lastShot > 1500) {
+        if (t.type !== 'wall' && t.type !== 'gate' && t.type !== 'tunnel' && Date.now() - t.lastShot > 1500) {
           let nearestPos: Vector | null = null;
           let minD = 400;
           let currentTargetStillValid = false;
@@ -4089,7 +4256,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             // Find NEW target if current is invalid
             // 1. Target Enemy Units
             entitiesRef.current.forEach(e => {
-              if (e.id === t.ownerId || e.faction === t.faction) return;
+              if (e.id === t.ownerId || e.faction === t.faction || e.isUnderground) return; // NEW: Layer isolation
               e.units.forEach(u => { 
                   const d = getDistance(t.pos, u.pos); 
                   if (d < minD) { minD = d; nearestPos = u.pos; t.currentTargetId = e.id; } 
@@ -4098,7 +4265,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
             // 2. Target Enemy Garrisons
             garrisonsRef.current.forEach(g => {
-              if (g.ownerId === t.ownerId || g.color === t.color) return;
+              if (g.ownerId === t.ownerId || g.color === t.color || g.isUnderground) return; // NEW: Layer isolation
               const d = getDistance(t.pos, g.pos);
               if (d < minD) { minD = d; nearestPos = g.pos; t.currentTargetId = g.id; }
             });
@@ -4125,7 +4292,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       entitiesRef.current.forEach(e => {
         if (e.units.length === 0 || e.hasHitInCurrentSwing) return;
         towersRef.current.forEach(t => {
-          if (t.ownerId === e.id || t.faction === e.faction) return;
+          if (t.ownerId === e.id || t.faction === e.faction || (t.type as any) === 'tunnel') return;
           if (getDistance(e.units[0].pos, t.pos) < 60 && e.isAttacking && e.attackTimer < 250) {
             const oldHp = t.hp; t.hp = Math.max(0, t.hp - 1); createDust(t.pos.x, t.pos.y, t.color); e.hasHitInCurrentSwing = true;
             if (t.hp <= 0 && oldHp > 0 && (e.id === myId || isHostRef.current)) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
@@ -4155,7 +4322,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           const unitsInRadius: Record<string, number> = {}; // empireId -> count
           
           entitiesRef.current.forEach(ent => {
-            if (ent.units.length === 0) return;
+            if (ent.units.length === 0 || ent.isUnderground) return; // NEW: Underground can't capture
             ent.units.forEach(u => {
               if (getDistance(u.pos, v.pos) < v.radius) {
                 const emp = ent.empireId || 'neutral';
@@ -4165,7 +4332,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           });
           
           garrisonsRef.current.forEach(g => {
-            if (g.units.length === 0) return;
+            if (g.units.length === 0 || g.isUnderground) return; // NEW: Underground can't capture
             g.units.forEach(u => {
               if (getDistance(u.pos, v.pos) < v.radius) {
                 const emp = g.empireId || 'neutral';
@@ -4277,7 +4444,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 if (d > 250) { // ESCORT_RADIUS
                     c.outOfCircleTime = (c.outOfCircleTime || 0) + dt;
                     if (c.outOfCircleTime > 3000) {
-                        console.log(`[CARAVAN] Contract Terminated: ${c.escortOwnerId} left the circle.`);
                         c.escortOwnerId = null;
                         c.escortTimer = 5;
                         c.outOfCircleTime = 0;
@@ -4336,11 +4502,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (!c.escortOwnerId) {
             const pHead = playerRef.current?.units[0];
             const isFPressed = keysRef.current['f'] || keysRef.current['F'] || keysRef.current['KeyF'];
-            if (pHead && getDistance(c.pos, pHead.pos) < 250 && isFPressed) {
+            if (pHead && !playerRef.current?.isUnderground && getDistance(c.pos, pHead.pos) < 250 && isFPressed) {
                 const now = Date.now();
                 if (now - (c.lastAkceTime || 0) > 1000) { // Simple debounce
                     c.lastAkceTime = now;
-                    console.log(`[CARAVAN] Requesting contract for ${c.id} by ${sid}`);
                     socketRef.current?.emit('sync_data', { 
                         roomId: currentRoomRef.current?.id, 
                         caravanEscortRequest: c.id 
@@ -4362,7 +4527,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     // --- GATE INTERACTION (OWNER ONLY) ---
     const isFPressed = keysRef.current['f'] || keysRef.current['F'] || keysRef.current['KeyF'];
     const pPos = playerRef.current?.units[0]?.pos;
-    if (isFPressed && pPos && Date.now() - lastGateToggleTime.current > 500) {
+    if (isFPressed && pPos && !playerRef.current?.isUnderground && Date.now() - lastGateToggleTime.current > 500) {
         // Ownership check: matches ID or player's empire color/faction
         const nearbyGate = towersRef.current.find(t => 
             t.type === 'gate' && 
@@ -4383,8 +4548,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 buildingId: nearbyGate.id, 
                 isOpen: nearbyGate.isOpen 
             });
-            
-            console.log(`[GATE] Toggled gate ${nearbyGate.id} to ${nearbyGate.isOpen ? 'OPEN' : 'CLOSED'}`);
         }
     }
 
@@ -4392,6 +4555,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (isFPressed && pPos) {
         const nearbyGarrison = garrisonsRef.current.find(g => 
             g.ownerId === myId && 
+            g.isUnderground === playerRef.current?.isUnderground && // NEW: Layer must match
             getDistance(g.pos, pPos) < 150
         );
         
@@ -4421,8 +4585,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 
                 // Force an immediate state sync for units
                 lastSyncTimeRef.current = 0; 
-                
-                console.log(`[GARRISON] Rejoined ${nearbyGarrison.units.length} units from ${nearbyGarrison.id}`);
             }
         }
     }
@@ -4443,8 +4605,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               
               // CRITICAL FIX: If local player's army is wiped out, trigger death UI immediately
               if (ent.units.length === 0 && (ENGINE_STATE === 'GAME_ACTIVE' || gameStateRef.current === 'GAME_ACTIVE')) {
-                  console.log("[DEATH DEBUG] Local player army wiped in final cleanup. Triggering UI.");
-                  
                   if (!matchResult) {
                     setMatchResult({ isWinner: false, winnerName: 'Enemies' });
                     
@@ -4481,7 +4641,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           
           // NEW: If a remote player reaches 0 units, tombstone them locally
           if (ent.units.length === 0 && before > 0 && ent.id !== myId) {
-              console.log(`[SYNC] Tombstoning player ${ent.id} locally.`);
               recentlyDestroyedPlayers.current.set(ent.id, Date.now());
           }
         });
@@ -4537,7 +4696,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         // We only trigger victory if some time has passed since match start to avoid instant lobby wins
         const timeSinceStart = Date.now() - (startTimeRef.current || 0);
         if (timeSinceStart > 5000) {
-            console.log("[LOCAL DEBUG] Last man standing detected locally!");
             setMatchResult({ isWinner: true, winnerName: nickname || 'You' });
             
             const endTime = Date.now();
@@ -4564,8 +4722,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // LOCAL DEATH DETECTION (Robust server synchronization)
     if (ENGINE_STATE === 'GAME_ACTIVE' && !isSpectatorRef.current && p && p.units.length === 0) {
-        console.log("[LOCAL DEBUG] Player has 0 units. Triggering death UI and informing server.");
-        
         socketRef.current?.emit('commander_death_detected', { 
             roomId: currentRoomRef.current?.id, 
             winnerId: null, 
@@ -4610,7 +4766,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           unitCount: g.units.length, 
           empireId: g.empireId, 
           color: g.color, 
-          attackTimer: g.attackTimer 
+          attackTimer: g.attackTimer,
+          isUnderground: g.isUnderground // NEW: Layer sync
         }));
 
       // SYNC CARAVANS: Only host sends the caravan state to everyone
@@ -4625,12 +4782,34 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       })) : undefined;
 
       socketRef.current.emit('sync_data', {
-        roomId: currentRoomRef.current.id, x: p.units[0]?.pos.x || 0, y: p.units[0]?.pos.y || 0, rotation: p.facingAngle, faction: p.faction, empireId: p.empireId, unitCount: p.units.length, akce: p.akce, hp: p.units[0]?.hp || 100, isAttacking: p.isAttacking, isDashing: p.isDashing, name: nickname, recruitedIds: Array.from(pendingRecruitsRef.current), garrisons: garrisonsToSync, caravans: caravansToSync
+        roomId: currentRoomRef.current.id, 
+        id: myId, 
+        x: p.units[0]?.pos.x || 0, 
+        y: p.units[0]?.pos.y || 0, 
+        rotation: p.facingAngle, 
+        faction: p.faction, 
+        empireId: p.empireId, 
+        unitCount: p.units.length, 
+        akce: p.akce, 
+        hp: p.units[0]?.hp || 100, 
+        isAttacking: p.isAttacking, 
+        isDashing: p.isDashing, 
+        isUnderground: p.isUnderground, 
+        equippedItem: p.equippedItem, // NEW: Sync equipped item
+        name: nickname, 
+        recruitedIds: Array.from(pendingRecruitsRef.current), 
+        garrisons: garrisonsToSync, 
+        caravans: caravansToSync
       });
       pendingRecruitsRef.current.clear();
     }
 
     frameId.current = requestAnimationFrame(update);
+    } catch (err) {
+        console.error("CRITICAL ENGINE ERROR:", err);
+        // Recovery: ensure next frame is still scheduled
+        frameId.current = requestAnimationFrame(update);
+    }
   }, [gameState, saveFinalStats, activePlayers, splitSwarm, isMultiplayer, isHost, myId, playerAkce, score, kills, totalRecruitsMatch, nickname]);
 
   useEffect(() => { 
@@ -4735,7 +4914,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       towersRef.current.forEach(t => {
         if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
         
-        // Fog of War: Hide enemy towers if too far (unless spectator)
+        const p = playerRef.current;
+        const isTunnel = (t.type as any) === 'tunnel';
+
+        // NEW: Layer Isolation for buildings
+        // If underground, ONLY draw tunnels. Hide walls/gates/towers.
+        if (p?.isUnderground && !isTunnel) return;
+
+        // Fog of War: Hide enemy buildings if too far (unless spectator)
         if (!isSpectatorRef.current && localHeadPos) {
           const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
           if (d > VISION_RADIUS && t.ownerId !== myId) return;
@@ -4744,6 +4930,82 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ctx.save();
         ctx.translate(t.pos.x, t.pos.y);
         
+        if (isTunnel) {
+            // --- DRAW TUNNEL (HOLE) ---
+            ctx.fillStyle = '#3e2723'; // Dark dirt
+            ctx.beginPath(); ctx.ellipse(0, 0, 40, 25, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#4e342e'; // Lighter dirt detail
+            ctx.beginPath(); ctx.ellipse(0, 0, 25, 15, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(0,0,0,0.7)'; // Hole
+            ctx.beginPath(); ctx.ellipse(0, 0, 15, 8, 0, 0, Math.PI * 2); ctx.fill();
+
+            // Interaction Hint (Match Gate Style)
+            if (localHeadPos && gameState === 'GAME_ACTIVE') {
+              const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+              if (dist < 300) {
+                const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+                const isOwner = t.ownerId === myId || t.ownerId === playerRef.current?.id;
+                
+                ctx.save();
+                // 1. [F] ENTER/EXIT Bubble
+                ctx.fillStyle = 'rgba(0,0,0,0.85)';
+                ctx.beginPath();
+                ctx.rect(-45, -85, 90, 24);
+                ctx.fill();
+                ctx.strokeStyle = '#fbbf24';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+
+                if (isMobile) {
+                  ctx.fillStyle = '#fbbf24';
+                  ctx.font = 'bold 10px Inter, sans-serif';
+                  ctx.textAlign = 'center';
+                  ctx.fillText('TAP TO ' + (p?.isUnderground ? 'EXIT' : 'ENTER'), 0, -68);
+                } else {
+                  ctx.fillStyle = '#fbbf24';
+                  ctx.font = 'bold 14px Inter, sans-serif';
+                  ctx.textAlign = 'center';
+                  ctx.fillText('F', -30, -68);
+                  ctx.fillStyle = '#ffffff';
+                  ctx.font = '10px Inter, sans-serif';
+                  ctx.textAlign = 'left';
+                  ctx.fillText(p?.isUnderground ? 'EXIT' : 'ENTER', -15, -68);
+                }
+
+                // 2. [R] HIDE Bubble (Only for owner)
+                if (isOwner) {
+                  ctx.translate(0, -30);
+                  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+                  ctx.beginPath();
+                  ctx.rect(-45, -85, 90, 24);
+                  ctx.fill();
+                  ctx.strokeStyle = '#ef4444';
+                  ctx.lineWidth = 1;
+                  ctx.stroke();
+
+                  if (isMobile) {
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = 'bold 10px Inter, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('TAP TO HIDE', 0, -68);
+                  } else {
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = 'bold 14px Inter, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('R', -30, -68);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = '10px Inter, sans-serif';
+                    ctx.textAlign = 'left';
+                    ctx.fillText('HIDE', -15, -68);
+                  }
+                }
+                ctx.restore();
+              }
+            }
+            ctx.restore();
+            return; // Skip the rest of building drawing for tunnels
+        }
+
         // Auto-detect empire style if missing or neutral (rendering safety)
         let renderEmpireId = t.empireId;
         if (!renderEmpireId || renderEmpireId === 'neutral') {
@@ -5054,7 +5316,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     // Bubble background
                     ctx.fillStyle = 'rgba(0,0,0,0.8)';
                     ctx.beginPath();
-                    ctx.roundRect(-45, -85, 90, 24, 6);
+                    ctx.rect(-45, -85, 90, 24);
                     ctx.fill();
                     ctx.strokeStyle = '#fbbf24';
                     ctx.lineWidth = 1;
@@ -5106,7 +5368,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               ctx.textAlign = 'right';
               ctx.fillText('🛡️', -28, -40);
             }
-          } else {
+          } else if (t.type === 'tower' || !t.type) {
             if (renderEmpireId === 'rim') {
               // --- Russian Krepost (Fortress) ---
               // 1. Log Base
@@ -5437,8 +5699,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // --- RENDER CARAVANS REWRITE ---
       caravansRef.current.forEach(c => {
-        if (!isPointInView(c.pos.x, c.pos.y, 400)) return;
-        
+        if (!isPointInView(c.pos.x, c.pos.y, 100)) return;
+        // NEW: Layer isolation for Caravans (Surface only)
+        if (!isSpectatorRef.current && playerRef.current?.isUnderground) return;
+
         ctx.save();
         ctx.translate(c.pos.x, c.pos.y);
         
@@ -5526,7 +5790,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 // Bubble
                 ctx.fillStyle = 'rgba(0,0,0,0.85)';
                 ctx.beginPath();
-                ctx.roundRect(-65, -100, 130, 28, 8);
+                ctx.rect(-65, -100, 130, 28);
                 ctx.fill();
                 ctx.strokeStyle = '#fbbf24';
                 ctx.lineWidth = 2;
@@ -5568,7 +5832,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       // Neutrals
       neutralsRef.current.forEach(n => {
         if (!isPointInView(n.pos.x, n.pos.y, 100)) return;
-        // Fog of War: Neutrals are now exempt based on new tactical rules
+        // NEW: Layer isolation for Neutrals (Holops are surface only)
+        if (!isSpectatorRef.current && playerRef.current?.isUnderground) return;
         
         const sprite = getUnitSprite('neutral', false, '#94a3b8', n.type);
         ctx.save();
@@ -5582,6 +5847,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       garrisonsRef.current.forEach(g => {
           if (isPointInView(g.pos.x, g.pos.y, 300)) {
+               // NEW: Layer Isolation for Garrisons
+               if (!isSpectatorRef.current && g.isUnderground !== playerRef.current?.isUnderground) {
+                 return; 
+               }
+
                const empireId = g.empireId || 'neutral';
                const isAttacking = g.attackTimer > 0;
                
@@ -5667,7 +5937,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
                   ctx.fillStyle = 'rgba(0,0,0,0.85)';
                   ctx.beginPath();
-                  ctx.roundRect(-55, -85, 110, 24, 8);
+                  ctx.rect(-55, -85, 110, 24);
                   ctx.fill();
                   ctx.strokeStyle = '#3b82f6';
                   ctx.lineWidth = 2;
@@ -5716,11 +5986,24 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           
           if (!isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER * 2)) return;
 
+          // NEW: Layer Isolation - Only see units in the same layer
+          const p = playerRef.current;
+          if (!isSpectatorRef.current && ent.isUnderground !== p?.isUnderground) {
+            return; // Invisible across layers
+          }
+
+          // Fog of War: Hide underground enemy units unless we are also underground
+          const sid = socketRef.current?.id || myId;
+          const isLocal = ent.id === sid;
+          if (!isSpectatorRef.current && !isLocal && ent.isUnderground && (!p || !p.isUnderground)) {
+            return; // Invisible (redundant but safe)
+          }
+
           // DISABLED FOW/STEALTH FOR ALL ENTITIES TO FIX INVISIBILITY BUG
-          let opacity = 1.0;
-          let hideName = false;
+          let opacity = ent.isUnderground ? 0.4 : 1.0;
+          let hideName = ent.isUnderground;
           const entInGrass = gameMapRef.current.obstacles.find(o => o.type === 'grass' && getDistance(head.pos, o.center) < o.radius);
-          if (entInGrass) {
+          if (entInGrass && !ent.isUnderground) {
               opacity = 0.5;
               hideName = true;
           }
@@ -5751,14 +6034,22 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           // Draw commander last to be on top
           if (isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER)) {
               if (ent.id === myId && isSpectatorRef.current) {
-                  drawUnit(ctx, head.pos.x, head.pos.y, '#888888', true, ent.facingAngle, ent.isAttacking, ent.attackTimer, 0.4, head.type, initialEmpire.id);
+                  drawUnit(ctx, head.pos.x, head.pos.y, '#888888', true, ent.facingAngle, ent.isAttacking, ent.attackTimer, 0.4, head.type, initialEmpire.id, ent.equippedItem);
                   
                   ctx.fillStyle = '#ff0000';
                   ctx.font = 'bold 16px Arial';
                   ctx.textAlign = 'center';
                   ctx.fillText('DEAD', head.pos.x, head.pos.y - 65);
               } else {
-                  drawUnit(ctx, head.pos.x, head.pos.y, ent.color, true, ent.facingAngle, ent.isAttacking, ent.attackTimer, opacity, head.type, empireId);
+                  drawUnit(ctx, head.pos.x, head.pos.y, ent.color, true, ent.facingAngle, ent.isAttacking, ent.attackTimer, opacity, head.type, empireId, ent.equippedItem);
+                  
+                  // LAG DETECTION
+                  if (ent.id !== myId && ent.lastUpdate && (Date.now() - ent.lastUpdate > 3000)) {
+                      ctx.fillStyle = '#ef4444';
+                      ctx.font = 'bold 10px Inter';
+                      ctx.textAlign = 'center';
+                      ctx.fillText('LAGGING...', head.pos.x, head.pos.y - 85);
+                  }
               }
           }
           
@@ -5922,6 +6213,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       
       ctx.restore(); // Restore from camera pan and zoom state
 
+      // NEW: Underground Tint Overlay
+      if (playerRef.current?.isUnderground) {
+        ctx.fillStyle = 'rgba(62, 39, 35, 0.45)'; // Brownish dirt tint
+        ctx.fillRect(0, 0, w, h);
+      }
+
       // Spectator HUD Overlay
       if (isSpectatorRef.current) {
         ctx.fillStyle = 'rgba(0,0,0,0.4)';
@@ -5949,7 +6246,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     };
     const rid = requestAnimationFrame(render); return () => cancelAnimationFrame(rid);
-  }, [myId, nickname, isPlacingWall, isPlacingGate, isPlacingTower]);
+  }, [myId, nickname, isPlacingWall, isPlacingGate, isPlacingTower, gameState]);
 
   const updateGarrisonMode = (id: string, mode: 'HOLD' | 'HUNT' | 'RECALL') => {
     const g = garrisonsRef.current.find(g => g.id === id);
@@ -5959,8 +6256,119 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     }
   };
 
+  // NEW: SVG Shovel Component for UI
+  const ShovelIcon = ({ isSuper = false, className = "w-6 h-6" }) => (
+    <svg viewBox="0 0 24 24" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* Centered Shovel Geometry */}
+      <path d="M12 18L12 4" stroke="#78350f" strokeWidth="2.5" strokeLinecap="round"/> {/* Handle */}
+      <path d="M10 4L14 4" stroke="#78350f" strokeWidth="2" strokeLinecap="round"/> {/* Top T-Bar */}
+      <path d="M8 16L12 21L16 16L8 16Z" fill={isSuper ? "#fbbf24" : "#cbd5e1"} stroke="#451a03" strokeWidth="1.5" strokeLinejoin="round"/> {/* Blade */}
+    </svg>
+  );
+
   return (
     <div className='relative w-full h-screen overflow-hidden bg-slate-900 font-sans text-white select-none'>
+      
+      {/* MINECRAFT STYLE INVENTORY UI - TOP LEVEL Z-INDEX */}
+      {gameState === 'GAME_ACTIVE' && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center bg-[#8b8b8b] border-2 border-[#373737] p-1 pointer-events-auto z-[9999]" style={{boxShadow: 'inset 2px 2px 0px 0px #ffffff, inset -2px -2px 0px 0px #555555'}}>
+          {/* Dynamically size based on items, min 3 slots */}
+          {Array.from({length: Math.max(3, playerRef.current?.shovelUses && playerRef.current.shovelUses > 0 ? 3 : 3)}).map((_, i) => {
+            const isActive = activeSlot === i;
+            
+            // Logic to determine what's in the slot
+            let icon = null;
+            let uses = 0;
+            let maxUses = 10;
+            
+            if (i === 0) {
+              icon = '⚔️';
+            } else if (i === 1 && playerRef.current?.shovelUses && playerRef.current.shovelUses > 0) {
+              const isSuper = playerRef.current.shovelUses > 10 || playerRef.current.shovelUses === 30;
+              icon = (
+                <div className="relative flex items-center justify-center w-full h-full">
+                  {isSuper && <span className="absolute text-[10px] -top-1 -left-1 z-10">✨</span>}
+                  <ShovelIcon isSuper={isSuper} className="w-8 h-8" />
+                </div>
+              );
+              uses = playerRef.current.shovelUses;
+              maxUses = isSuper ? 30 : 10;
+            }
+
+            return (
+              <div 
+                key={i}
+                onClick={() => { 
+                  setActiveSlot(i);
+                  const p = playerRef.current;
+                  if (p) {
+                    if (i === 0) p.equippedItem = 'sword';
+                    else if (i === 1 && p.shovelUses && p.shovelUses > 0) p.equippedItem = (p.shovelUses > 10 || p.shovelUses === 30) ? 'super_shovel' : 'shovel';
+                    else p.equippedItem = 'sword';
+                  }
+                }}
+                className="w-10 h-10 bg-[#8b8b8b] relative cursor-pointer flex items-center justify-center text-xl select-none hover:bg-white/10"
+                style={{
+                  border: '2px solid',
+                  borderColor: '#373737 #ffffff #ffffff #373737', // Minecraft slot indent
+                  marginLeft: i > 0 ? '-2px' : '0' // Overlap borders slightly like in MC
+                }}
+              >
+                {/* Active Slot Highlight */}
+                {isActive && (
+                  <div className="absolute -inset-[3px] border-4 border-white pointer-events-none z-20 shadow-[0_0_10px_rgba(255,255,255,0.5)]" />
+                )}
+                
+                {icon}
+
+                {/* Durability Bar */}
+                {icon && uses > 0 && (
+                  <div className="absolute bottom-0.5 left-0.5 right-0.5 h-1 bg-black/80 z-10">
+                    <div 
+                      className="h-full" 
+                      style={{
+                        width: `${(uses / maxUses) * 100}%`,
+                        backgroundColor: (uses / maxUses) > 0.5 ? '#22c55e' : ((uses / maxUses) > 0.2 ? '#eab308' : '#ef4444')
+                      }}
+                    />
+                  </div>
+                )}
+                
+                {/* Slot Number Hint */}
+                <div className="absolute top-0 left-0.5 text-[8px] font-bold text-white/30 z-10">{i + 1}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Connection Loss Overlay */}
+      {!socketConnected && (gameState === 'GAME_ACTIVE' || gameState === 'LOBBY_WAITING') && (
+        <div className='absolute inset-0 bg-slate-900/60 backdrop-blur-md flex flex-col items-center justify-center z-[300] animate-in fade-in duration-300'>
+          <div className='bg-red-500/10 border border-red-500/20 px-10 py-8 rounded-[3rem] flex flex-col items-center gap-6 shadow-[0_0_50px_rgba(239,68,68,0.1)]'>
+            <div className='w-20 h-20 rounded-3xl bg-red-500/20 flex items-center justify-center text-red-500 animate-pulse'>
+              <WifiOff size={40} />
+            </div>
+            <div className='text-center'>
+              <h2 className='text-4xl font-black text-white uppercase tracking-tighter mb-2'>{t.connectionLost || 'CONNECTION LOST'}</h2>
+              <p className='text-red-400 font-bold text-xs uppercase tracking-widest animate-pulse'>{t.reconnecting || 'RECONNECTING TO BATTLE...'}</p>
+            </div>
+            <button 
+              onClick={() => {
+                if (socketRef.current) {
+                  socketRef.current.connect();
+                } else {
+                  window.location.reload();
+                }
+              }}
+              className='mt-4 px-8 py-4 bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl font-black text-sm uppercase tracking-widest transition-all active:scale-95'
+            >
+              {t.tryNow || 'TRY RECONNECT NOW'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {queuePosition !== null && (
         <div className='absolute inset-0 bg-slate-900/90 backdrop-blur-2xl flex flex-col items-center justify-center p-6 z-[200] animate-in fade-in duration-500'>
           <div className='w-24 h-24 border-8 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mb-8 shadow-[0_0_50px_rgba(99,102,241,0.2)]'></div>
@@ -6282,7 +6690,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           </div>
 
           {/* Bottom HUD */}
-          <div className='w-full p-4 md:p-10 flex flex-row items-end justify-between'>
+          <div className='absolute bottom-0 left-0 right-0 w-full p-4 md:p-10 flex flex-row items-end justify-between pointer-events-none z-[150]'>
             <div className='pointer-events-auto flex-shrink-0 scale-75 md:scale-100 origin-bottom-left'>
               <Joystick onMove={(x, y) => { joystickDir.current = { x, y }; }} />
             </div>
@@ -6790,6 +7198,45 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   <div className='space-y-2 md:space-y-3'>
                     <p className='text-[8px] md:text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] px-2'>{t.construction}</p>
                     <div className='grid grid-cols-1 gap-2'>
+                      {/* NEW: Shovels in Shop */}
+                      <button onClick={() => { 
+                        if (playerRef.current && playerRef.current.akce >= 10) {
+                          playerRef.current.akce -= 10;
+                          playerRef.current.shovelUses = 10;
+                          playerRef.current.equippedItem = 'shovel';
+                          setActiveSlot(1); // Auto-select shovel slot
+                          setPlayerAkce(playerRef.current.akce);
+                          setShowShop(false);
+                        }
+                      }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-yellow-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
+                        <div className='flex items-center gap-3 md:gap-4'>
+                          <div className='w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-yellow-500/20 flex items-center justify-center group-hover:scale-110 transition-transform'>
+                            <ShovelIcon className="w-8 h-8 md:w-10 md:h-10" />
+                          </div>
+                          <div className='text-left'><div className='text-xs md:text-base font-bold uppercase'>Купить Лопату</div><div className='text-[8px] md:text-[10px] text-slate-500 font-bold uppercase'>10 использований</div></div>
+                        </div>
+                        <div className='flex items-center gap-1.5 bg-slate-950 px-2 py-1 md:px-3 md:py-1.5 rounded-lg md:rounded-xl font-black text-amber-500 border border-amber-500/20 text-[10px] md:text-base'>10 <span className='text-[6px] md:text-[8px]'>AKÇE</span></div>
+                      </button>
+                      <button onClick={() => { 
+                        if (playerRef.current && playerRef.current.akce >= 30) {
+                          playerRef.current.akce -= 30;
+                          playerRef.current.shovelUses = 30;
+                          playerRef.current.equippedItem = 'super_shovel';
+                          setActiveSlot(1); // Auto-select shovel slot
+                          setPlayerAkce(playerRef.current.akce);
+                          setShowShop(false);
+                        }
+                      }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-yellow-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
+                        <div className='flex items-center gap-3 md:gap-4'>
+                          <div className='w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-yellow-500/20 flex items-center justify-center group-hover:scale-110 transition-transform relative'>
+                            <ShovelIcon isSuper={true} className="w-8 h-8 md:w-10 md:h-10" />
+                            <span className="absolute text-[10px] top-1 left-1">✨</span>
+                          </div>
+                          <div className='text-left'><div className='text-xs md:text-base font-bold uppercase'>Супер Лопата</div><div className='text-[8px] md:text-[10px] text-slate-500 font-bold uppercase'>30 использований</div></div>
+                        </div>
+                        <div className='flex items-center gap-1.5 bg-slate-950 px-2 py-1 md:px-3 md:py-1.5 rounded-lg md:rounded-xl font-black text-amber-500 border border-amber-500/20 text-[10px] md:text-base'>30 <span className='text-[6px] md:text-[8px]'>AKÇE</span></div>
+                      </button>
+
                       <button onClick={() => { 
                         setIsPlacingTower(true); 
                         setIsPlacingWall(false); 
