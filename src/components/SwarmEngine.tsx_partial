@@ -1,0 +1,136 @@
+import { EmpireType } from './SelectionScreen';
+import { Language, translations } from '../utils/i18n';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { 
+  Users, 
+  Sword, 
+  Zap, 
+  Shield, 
+  Trophy, 
+  Crown, 
+  ArrowLeft, 
+  RefreshCw, 
+  Loader2, 
+  LogOut 
+} from 'lucide-react';
+import { cn } from '../utils/cn';
+import { 
+  Entity, 
+  Unit, 
+  Garrison, 
+  UnitType, 
+  Projectile, 
+  Building, 
+  Particle,
+  MapData,
+  Obstacle
+} from '../types/game'; // Assuming types are extracted or need to be
+import { generateId, getDistance } from '../utils/math';
+import Joystick from './Joystick';
+
+// Game Constants
+const WORLD_SIZE = 4000;
+const LOBBY_WORLD_SIZE = 1500;
+const GRID_SIZE = 70;
+const GRID_MARGIN = 2;
+const UNIT_RADIUS = 8;
+const MINIMAP_SIZE = 200;
+const ARCHER_RANGE = 350;
+const PROJECTILE_SPEED = 12;
+const PROJECTILE_EXPLOSION_RADIUS = 30;
+const MELEE_ENGAGEMENT_DIST = 100;
+
+export let ENGINE_STATE = 'MENU';
+
+interface SwarmEngineProps {
+  initialEmpire: {
+    id: EmpireType;
+    color: string;
+  };
+  onBack?: () => void;
+  language: Language;
+}
+
+const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, language }) => {
+  const t = translations[language];
+  const playerColor = initialEmpire.color;
+  
+  // Game State Refs (Performance Optimized)
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const socketRef = useRef<any>(null);
+  const entitiesRef = useRef<Entity[]>([]);
+  const garrisonsRef = useRef<Garrison[]>([]);
+  const projectilesRef = useRef<Projectile[]>([]);
+  const towersRef = useRef<Building[]>([]);
+  const neutralsRef = useRef<Unit[]>([]);
+  const particlesRef = useRef<Particle[]>([]);
+  const playerRef = useRef<Entity | null>(null);
+  const frameId = useRef<number>(0);
+  const mouseWorldPosRef = useRef({ x: 0, y: 0 });
+  const cameraRef = useRef({ x: 0, y: 0 });
+  const shakeRef = useRef(0);
+  const lastWallPosRef = useRef<{x: number, y: number} | null>(null);
+  const spawnProtectionRef = useRef(false);
+  const currentRoomRef = useRef<any>(null);
+  const pendingRecruitsRef = useRef<Set<string>>(new Set());
+  const killsRef = useRef(0);
+  const fpsRef = useRef({ count: 0, lastTime: Date.now() });
+  const worldSizeRef = useRef(WORLD_SIZE);
+
+  // React State (UI)
+  const [gameState, setGameState] = useState<'MENU' | 'CONNECTING' | 'LOBBY_WAITING' | 'GAME_ACTIVE' | 'MATCH_RESULTS'>('MENU');
+  const [nickname, setNickname] = useState(localStorage.getItem('janissary_nickname') || 'Agha_' + Math.floor(Math.random() * 999));
+  const [isMultiplayer, setIsMultiplayer] = useState(false);
+  const [discoveredRooms, setDiscoveredRooms] = useState<any[]>([]);
+  const [currentRoom, setCurrentRoom] = useState<any>(null);
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const [lobbyPlayers, setLobbyPlayers] = useState<any[]>([]);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [isHost, setIsHost] = useState(false);
+  const [score, setScore] = useState(0);
+  const [playerAkce, setPlayerAkce] = useState(100);
+  const [activePlayers, setActivePlayers] = useState(0);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [activeSplitGarrisonId, setActiveSplitGarrisonId] = useState<string | null>(null);
+  const [playerGarrisons, setPlayerGarrisons] = useState<Garrison[]>([]);
+  const [matchResult, setMatchResult] = useState<{ isWinner: boolean; winnerName: string } | null>(null);
+  const [isDashing, setIsDashing] = useState(false);
+  const [hasVoted, setHasVoted] = useState(false);
+  const [voteCount, setVoteCount] = useState({ voted: 0, total: 0 });
+  const [lastEvent, setLastEvent] = useState<string | null>(null);
+  const [fps, setFps] = useState(60);
+  const [isPlacingWall, setIsPlacingWall] = useState(false);
+  const [isPlacingGate, setIsPlacingGate] = useState(false);
+  const [isPlacingTower, setIsPlacingTower] = useState(false);
+  const [matchStats, setMatchStats] = useState({ kills: 0, maxArmy: 0, towersBuilt: 0, duration: '0:00' });
+  const [roomForm, setRoomForm] = useState({ name: '', password: '', limit: 10 });
+  const [networkStatus, setNetworkStatus] = useState('Ready');
+  const [myId, setMyId] = useState('');
+  
+  const joystickDir = useRef({ x: 0, y: 0 });
+  const [showShop, setShowShop] = useState(false);
+  const [isSpectator, setIsSpectator] = useState(false);
+  const isSpectatorRef = useRef(false);
+  const [isDraggingCamera, setIsDraggingCamera] = useState(false);
+  const [cameraZoom, setCameraZoom] = useState(1);
+  const cameraZoomRef = useRef(1);
+  const [serverCapacity, setServerCapacity] = useState({ active: 0, max: 1000 });
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
+
+  const GRID_CELL_SIZE = 100;
+  const spatialGridRef = useRef<Map<string, { unit: Unit, entityId: string }[]>>(new Map());
+
+  const gameMapRef = useRef<MapData>({
+    obstacles: [],
+    spawnPoints: []
+  });
+
+  // i18n helper
+  const showError = (msg: string) => {
+    setErrorMessage(msg);
+    setTimeout(() => setErrorMessage(null), 3000);
+  };
+
+  // ... (Remainder of the file will be updated with i18n strings in the final response)
