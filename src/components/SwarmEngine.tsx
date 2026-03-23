@@ -705,7 +705,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
 
   // Networking State
-  const socketRef = useRef<SocketProxy | null>(null);
+  const socketProxyRef = useRef<SocketProxy | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
   const lastUIUpdateTimeRef = useRef<number>(0); // NEW: Throttle React state updates
   const [isHost, setIsHost] = useState(false);
@@ -785,7 +785,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // Add or Update players
     players.forEach(p => {
-      const myIdVal = socketRef.current?.id || myId;
+      const myIdVal = socketProxyRef.current?.id || myId;
       if (p.id === myIdVal) return;
       
       const cached = playerSkinsRef.current.get(p.id);
@@ -829,7 +829,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
   useEffect(() => {
     const socket = new SocketProxy(SOCKET_URL, myShortIdRef, entitiesRef, setMyId, setLastEvent);
-    socketRef.current = socket;
+    socketProxyRef.current = socket;
 
     socket.on('connect', () => {
       setNetworkStatus('Ready');
@@ -1062,7 +1062,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('player_eliminated', (data: { loserId: string, winnerId?: string, winnerName: string }) => {
-      const mySid = socketRef.current?.id || myIdRef.current;
+      const mySid = socketProxyRef.current?.id || myIdRef.current;
       
       const isItMe = data.loserId === mySid || (myIdRef.current && data.loserId === myIdRef.current);
 
@@ -1098,7 +1098,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         
         // CHECK: If we are the ONLY ONE left after this elimination, we WIN.
         const alivePlayers = entitiesRef.current.filter(e => e.type === 'player' && e.units.length > 0);
-        const mySidVal = socketRef.current?.id || myId;
+        const mySidVal = socketProxyRef.current?.id || myId;
         const amIAlive = entitiesRef.current.find(e => e.id === mySidVal && e.units.length > 0);
 
         if (alivePlayers.length === 1 && amIAlive && !isSpectatorRef.current) {
@@ -1128,7 +1128,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('game_over_final', (data: { winnerId: string, winnerName: string }) => {
-      const mySid = socketRef.current?.id || myIdRef.current;
+      const mySid = socketProxyRef.current?.id || myIdRef.current;
       
       // If the server says we won, OR if we are the only one left and the winner is null (Draw fallback)
       const isWinner = data.winnerId === mySid || (myIdRef.current && data.winnerId === myIdRef.current) || (data.winnerId === null && !isSpectatorRef.current);
@@ -1166,7 +1166,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setCurrentRoom(room);
       currentRoomRef.current = room; // Sync ref immediately
       
-      const myIdVal = socketProxy.id || myId;
+      const myIdVal = socket.id || myId;
       const me = room.players?.find(p => p.id === myIdVal);
       if (me) myShortIdRef.current = me.shortId || null;
 
@@ -1380,7 +1380,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         // Commander is dying
                         
                         // Send death event to server so others know
-                        socketRef.current?.emit('commander_death_detected', { 
+                        socketProxyRef.current?.emit('commander_death_detected', { 
                           roomId: currentRoomRef.current?.id, 
                           winnerId: data.attackerId || null, 
                           loserId: myId 
@@ -1806,7 +1806,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               existing.targetPos = { ...rc.targetPos };
               existing.escortOwnerId = rc.escortOwnerId;
               
-              const sid = socketRef.current?.id || myIdRef.current;
+              const sid = socketProxyRef.current?.id || myIdRef.current;
               if (existing.escortOwnerId !== sid) {
                   existing.escortTimer = rc.escortTimer;
               }
@@ -1959,8 +1959,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     // This effect now only handles periodic world sync if host
     if (gameState === 'GAME_ACTIVE' && isMultiplayer && isHost && currentRoom) {
       const interval = setInterval(() => {
-        if (socketRef.current && currentRoom) {
-          socketRef.current.emit('host_sync_world', {
+        if (socketProxyRef.current && currentRoom) {
+          socketProxyRef.current.emit('host_sync_world', {
             roomId: currentRoom.id,
             neutrals: neutralsRef.current,
             towers: towersRef.current
@@ -1977,12 +1977,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const startLobby = () => {
-    if (!roomForm.name.trim() || !nickname.trim() || !socketRef.current) return;
+    if (!roomForm.name.trim() || !nickname.trim() || !socketProxyRef.current) return;
     setIsCreatingRoom(true);
     setIsMultiplayer(true);
     setGameState('LOBBY_WAITING');
     ENGINE_STATE = 'LOBBY_WAITING';
-    socketRef.current.emit('create_room', {
+    socketProxyRef.current.emit('create_room', {
       name: roomForm.name,
       password: roomForm.password,
       limit: roomForm.limit,
@@ -1991,7 +1991,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const joinRoom = (room: Room) => {
-    if (!socketRef.current) return;
+    if (!socketProxyRef.current) return;
     
     // If room has a password, show our custom modal instead of prompt
     if (room.password) {
@@ -2004,14 +2004,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const submitJoinRequest = (roomId: string | number, password: string) => {
-    if (!socketRef.current) return;
+    if (!socketProxyRef.current) return;
     
     setIsJoiningRoom(true);
     setIsMultiplayer(true);
     setGameState('CONNECTING');
     ENGINE_STATE = 'CONNECTING';
     
-    socketRef.current.emit('join_room', { 
+    socketProxyRef.current.emit('join_room', { 
       roomId: String(roomId), 
       password: password || '',
       playerName: nickname // Send player name during join
@@ -2021,8 +2021,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   useEffect(() => {
-    if (currentRoom && socketRef.current) {
-        const hostFlag = currentRoom.hostId === socketRef.current.id;
+    if (currentRoom && socketProxyRef.current) {
+        const hostFlag = currentRoom.hostId === socketProxyRef.current.id;
         if (hostFlag !== isHost) {
             setIsHost(hostFlag);
             isHostRef.current = hostFlag;
@@ -2031,11 +2031,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   }, [currentRoom, isHost]);
 
   const leaveRoom = () => {
-    if (socketRef.current && currentRoom) {
+    if (socketProxyRef.current && currentRoom) {
       isLeavingRef.current = true;
       
       // Standard leave logic
-      socketRef.current.emit('leave_room', String(currentRoom.id));
+      socketProxyRef.current.emit('leave_room', String(currentRoom.id));
       
       // Clear flag after a delay to allow future joins
       setTimeout(() => {
@@ -2064,9 +2064,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const voteRematch = () => {
-    if (!socketRef.current || !currentRoom) return;
+    if (!socketProxyRef.current || !currentRoom) return;
     // Rematch vote emit
-    socketRef.current.emit('vote_rematch', currentRoom.id);
+    socketProxyRef.current.emit('vote_rematch', currentRoom.id);
     setHasVoted(true);
   };
 
@@ -2156,7 +2156,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
       
       // Fast sync trigger for the new split
-      if (socketRef.current && currentRoomRef.current) {
+      if (socketProxyRef.current && currentRoomRef.current) {
           const myGarrisons = garrisonsRef.current
             .filter(g => g.ownerId === myId)
             .map(g => ({
@@ -2169,7 +2169,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               attackTimer: g.attackTimer
             }));
 
-          socketRef.current.emit('sync_data', {
+          socketProxyRef.current.emit('sync_data', {
             roomId: currentRoomRef.current.id,
             garrisons: myGarrisons,
             unitCount: ent.units.length,
@@ -2212,7 +2212,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
         
         // Sync
-        if (socketRef.current && currentRoomRef.current) {
+        if (socketProxyRef.current && currentRoomRef.current) {
             const myGarrisons = garrisonsRef.current
                 .filter(g => g.ownerId === myId)
                 .map(g => ({
@@ -2225,7 +2225,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     attackTimer: g.attackTimer
                 }));
 
-            socketRef.current.emit('sync_data', {
+            socketProxyRef.current.emit('sync_data', {
                 roomId: currentRoomRef.current.id,
                 garrisons: myGarrisons,
                 unitCount: p.units.length,
@@ -2426,10 +2426,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 isOpen: false
             });
             
-            if (socketRef.current) {
+            if (socketProxyRef.current) {
               const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
               console.log("EMITTING TUNNEL TO SERVER:", currentRoomId, newTunnelObj);
-              socketRef.current.emit('building_placed', { roomId: currentRoomId, ...newTunnelObj });
+              socketProxyRef.current.emit('building_placed', { roomId: currentRoomId, ...newTunnelObj });
             }
           }
         } else {
@@ -2438,8 +2438,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           p.attackTimer = 300;
           p.attackCooldown = 500;
           p.swingKills = 0; // Reset swing kills
-          if (socketRef.current && currentRoom) {
-            socketRef.current.emit('attack', { roomId: currentRoom.id });
+          if (socketProxyRef.current && currentRoom) {
+            socketProxyRef.current.emit('attack', { roomId: currentRoom.id });
           }
         }
       }
@@ -2559,8 +2559,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
     
     // Sync projectile creation so enemies can see it
-    if (socketRef.current && currentRoomRef.current) {
-        socketRef.current.emit('tower_fire', {
+    if (socketProxyRef.current && currentRoomRef.current) {
+        socketProxyRef.current.emit('tower_fire', {
             roomId: currentRoomRef.current.id,
             ownerId,
             startX: pos.x,
@@ -2752,7 +2752,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       towersBuiltRef.current++;
       shakeRef.current = bType === 'tower' ? 15 : 5;
 
-      socketRef.current?.emit('building_placed', { 
+      socketProxyRef.current?.emit('building_placed', { 
         buildingId: bId,
         id: bId,
         roomId: currentRoom?.id, 
@@ -2821,8 +2821,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (clickedCaravan) {
             const pHead = playerRef.current?.units[0];
             if (pHead && getDistance(clickedCaravan.pos, pHead.pos) < 250) {
-                const sid = socketRef.current?.id || myId;
-                socketRef.current?.emit('sync_data', { roomId: currentRoomRef.current?.id, caravanEscortRequest: clickedCaravan.id });
+                const sid = socketProxyRef.current?.id || myId;
+                socketProxyRef.current?.emit('sync_data', { roomId: currentRoomRef.current?.id, caravanEscortRequest: clickedCaravan.id });
                 createDust(clickedCaravan.pos.x, clickedCaravan.pos.y, '#fbbf24');
                 if (isHostRef.current) {
                     clickedCaravan.escortOwnerId = sid;
@@ -2846,7 +2846,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 recentlyDestroyedGarrisons.current.set(clickedGarrison.id, Date.now());
                 setPlayerGarrisons([...garrisonsRef.current.filter(xg => xg.ownerId === myId)]);
                 createDust(clickedGarrison.pos.x, clickedGarrison.pos.y, clickedGarrison.color);
-                socketRef.current?.emit('garrison_destroyed', { roomId: currentRoomRef.current?.id, garrisonId: clickedGarrison.id, ownerId: myId });
+                socketProxyRef.current?.emit('garrison_destroyed', { roomId: currentRoomRef.current?.id, garrisonId: clickedGarrison.id, ownerId: myId });
                 lastSyncTimeRef.current = 0; 
                 return;
             }
@@ -2872,7 +2872,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       const b = towersRef.current[clickedBuildingIdx];
       
       // Ownership check: ID or faction color/string
-      const currentId = socketRef.current?.id || myId;
+      const currentId = socketProxyRef.current?.id || myId;
       const isOwner = b.ownerId === currentId || b.color === playerColor || b.faction === playerColor;
       
       if (isOwner) {
@@ -2880,7 +2880,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (b.type === 'gate' && isMobile && pHead && getDistance(b.pos, pHead.pos) < 150) {
             b.isOpen = !b.isOpen;
             createDust(b.pos.x, b.pos.y, '#fbbf24');
-            socketRef.current?.emit('toggle_gate', { roomId: currentRoomRef.current?.id, buildingId: b.id, isOpen: b.isOpen });
+            socketProxyRef.current?.emit('toggle_gate', { roomId: currentRoomRef.current?.id, buildingId: b.id, isOpen: b.isOpen });
             return;
         }
 
@@ -2907,7 +2907,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           createDust(b.pos.x, b.pos.y, '#fbbf24');
           
           // Emit destruction to server (Authoritative sync)
-          socketRef.current?.emit('building_destroyed', { 
+          socketProxyRef.current?.emit('building_destroyed', { 
             roomId: currentRoomRef.current?.id, 
             buildingId: b.id 
           });
@@ -2939,7 +2939,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     };
     caravansRef.current = [];
     
-    const sid = socketRef.current?.id || myId;
+    const sid = socketProxyRef.current?.id || myId;
     
     // Ensure the local player is ALWAYS included in the lobby even if server list is slightly delayed
     let playerList = [...players];
@@ -3044,7 +3044,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     };
     caravansRef.current = [];
     
-    const sid = socketRef.current?.id || myId;
+    const sid = socketProxyRef.current?.id || myId;
     
     // Dynamic Spawn Points calculation
     const getSpawnPos = (idx: number) => {
@@ -3142,8 +3142,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       };
       
       // Emit initial sync to inform server of teleport
-      if (socketRef.current && currentRoomRef.current) {
-        socketRef.current.emit('sync_data', {
+      if (socketProxyRef.current && currentRoomRef.current) {
+        socketProxyRef.current.emit('sync_data', {
           x: playerRef.current.units[0].pos.x,
           y: playerRef.current.units[0].pos.y,
           rotation: playerRef.current.facingAngle,
@@ -3161,7 +3161,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (gameState === 'LOBBY_WAITING' && currentRoom && isHost) {
       const pCount = (currentRoom.players || []).length;
       if (pCount >= (currentRoom.limit || currentRoom.maxPlayers || 10) && countdown === null) {
-        socketRef.current?.emit('start_countdown', { roomId: currentRoom.id });
+        socketProxyRef.current?.emit('start_countdown', { roomId: currentRoom.id });
       }
     }
   }, [currentRoom, gameState, countdown, isHost]);
@@ -3182,7 +3182,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     const p = playerRef.current;
     
     // DEBUG: Ensure playerRef is always synced with local player entity
-    const sid = socketRef.current?.id || myId;
+    const sid = socketProxyRef.current?.id || myId;
     if (!p || p.id !== sid) {
         const localEnt = entitiesRef.current.find(e => e.id === sid);
         if (localEnt) {
@@ -3267,7 +3267,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     // 3. Movement & Physics (Entities)
     entitiesRef.current.forEach(ent => {
         if (ent.units.length === 0) return;
-        const sid = socketRef.current?.id || myId;
+        const sid = socketProxyRef.current?.id || myId;
         const isLocalPlayer = ent.id === sid;
         const head = ent.units[0];
 
@@ -3429,10 +3429,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 const tid = foundTunnel.id;
                 towersRef.current = towersRef.current.filter(b => b.id !== tid);
                 
-                if (socketRef.current) {
+                if (socketProxyRef.current) {
                     const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
                     console.log("EMITTING TUNNEL DESTROY:", tid);
-                    socketRef.current.emit('building_destroyed', { roomId: currentRoomId, buildingId: tid });
+                    socketProxyRef.current.emit('building_destroyed', { roomId: currentRoomId, buildingId: tid });
                 }
                 if (keysRef.current['r']) keysRef.current['r'] = false;
                 if (keysRef.current['R']) keysRef.current['R'] = false;
@@ -3440,7 +3440,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             }
         }
 
-        if (ent.id === myId || (socketRef.current?.id && ent.id === socketRef.current.id)) {
+        if (ent.id === myId || (socketProxyRef.current?.id && ent.id === socketProxyRef.current.id)) {
             let finalSpd = spd * dt_scale;
             if (ent.isAttacking && ent.cachedMinDist && ent.cachedMinDist < 150) {
                 finalSpd *= 1.25;
@@ -3512,7 +3512,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (g.units.length === 0) return;
         
         // Ownership check: only owner (or host for AI) calculates logic. Others just LERP.
-        const isOwner = g.ownerId === myId || (socketRef.current?.id && g.ownerId === socketRef.current.id);
+        const isOwner = g.ownerId === myId || (socketProxyRef.current?.id && g.ownerId === socketProxyRef.current.id);
         const shouldCalculate = isOwner || (isMultiplayer && isHostRef.current && g.ownerId === 'ai');
 
         if (!shouldCalculate) {
@@ -3561,7 +3561,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         // LOCAL GARRISON LOGIC (Calculated only by owner/host)
         if (g.units.length === 1 && g.mode !== 'RECALL') {
             g.mode = 'RECALL';
-            if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' });
+            if (isMultiplayer) socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' });
         }
 
         // Throttle heavy AI/Detection logic (every 10 frames for each garrison)
@@ -3597,7 +3597,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
                 if (nearestEnemyDist < 450) {
                     g.mode = 'HUNT';
-                    if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
+                    if (isMultiplayer) socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
                     // FIXED: Immediate target acquisition on transition to prevent "stuck" frames
                     shouldRunHeavyLogic = true; 
                 } else {
@@ -3607,7 +3607,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         const d = getDistance(g.pos, t.pos);
                         if (d < 450) {
                             g.mode = 'HUNT';
-                            if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
+                            if (isMultiplayer) socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
                             shouldRunHeavyLogic = true;
                         }
                     });
@@ -3730,7 +3730,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         entityMap.set(ent.id, ent);
         if (ent.units.length === 0) return;
         
-        const isMe = ent.id === myId || (socketRef.current?.id && ent.id === socketRef.current.id);
+        const isMe = ent.id === myId || (socketProxyRef.current?.id && ent.id === socketProxyRef.current.id);
         const inView = isLocalInView(ent.units[0].pos);
         if (!isMe && !inView) return;
 
@@ -3755,7 +3755,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     garrisonsRef.current.forEach(g => {
         if (g.units.length === 0) return;
         
-        const isMyGarrison = g.ownerId === myId || (socketRef.current?.id && g.ownerId === socketRef.current.id);
+        const isMyGarrison = g.ownerId === myId || (socketProxyRef.current?.id && g.ownerId === socketProxyRef.current.id);
         const inView = isLocalInView(g.pos);
         if (!isMyGarrison && !inView) return;
 
@@ -3826,7 +3826,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       entitiesRef.current.forEach(e1 => {
         if (e1.units.length === 0) return;
         
-        const isOwner = e1.id === myId || (socketRef.current?.id && e1.id === socketRef.current.id);
+        const isOwner = e1.id === myId || (socketProxyRef.current?.id && e1.id === socketProxyRef.current.id);
         const shouldCalculate = isOwner || (!isMultiplayer && e1.type === 'ai') || (isMultiplayer && isHostRef.current && e1.type === 'ai');
         if (!shouldCalculate) return;
 
@@ -3922,7 +3922,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
                   const damageVal = 100;
                   if (e1.id === myId && tOwnerId !== myId) {
-                      socketRef.current?.emit('unit_hit', { 
+                      socketProxyRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
                           damage: damageVal, 
@@ -3978,7 +3978,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       garrisonsRef.current.forEach(g => {
         if (g.units.length === 0) return;
         
-        const isOwner = g.ownerId === myId || (socketRef.current?.id && g.ownerId === socketRef.current.id);
+        const isOwner = g.ownerId === myId || (socketProxyRef.current?.id && g.ownerId === socketProxyRef.current.id);
         const shouldCalculate = isOwner || (isMultiplayer && isHostRef.current && g.ownerId === 'ai');
         if (!shouldCalculate) return;
 
@@ -4014,8 +4014,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         t.hp = Math.max(0, t.hp - 1);
                         createDust(t.pos.x, t.pos.y, t.color);
                         if (isOwner) {
-                            socketRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
-                            if (t.hp <= 0 && oldHp > 0) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+                            socketProxyRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
+                            if (t.hp <= 0 && oldHp > 0) socketProxyRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
                         }
                     }
                 });
@@ -4094,7 +4094,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   if (isAttackerLocal || isAttackerHostAI) {
                     if (!isTargetGarrison) {
-                      socketRef.current?.emit('unit_hit', { 
+                      socketProxyRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
                           damage: damageVal, 
@@ -4104,7 +4104,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           isUndergroundAttack: g.isUnderground // NEW: Sync underground status
                       });
                     } else {
-                      socketRef.current?.emit('garrison_hit', { 
+                      socketProxyRef.current?.emit('garrison_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
                           damage: damageVal, 
@@ -4144,8 +4144,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               t.hp = Math.max(0, t.hp - 1);
               createDust(t.pos.x, t.pos.y, t.color);
               if (isOwner) {
-                socketRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
-                if (t.hp <= 0 && oldHp > 0) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+                socketProxyRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
+                if (t.hp <= 0 && oldHp > 0) socketProxyRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
               }
             }
           });
@@ -4202,7 +4202,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   // SERVER SYNC: Inform the target player they took damage
                   if (pr.ownerId === myId) {
-                      socketRef.current?.emit('unit_hit', { 
+                      socketProxyRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: e.id, 
                           damage: aoeD,
@@ -4214,7 +4214,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   // SERVER SYNC: Any client that detects a commander death should report it.
                   if (ui === 0 && e.units.length === 1) {
-                      socketRef.current?.emit('commander_death_detected', { 
+                      socketProxyRef.current?.emit('commander_death_detected', { 
                         roomId: currentRoomRef.current?.id, 
                         winnerId: pr.ownerId === 'remote'?null:pr.ownerId, 
                         loserId: e.id 
@@ -4222,7 +4222,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   }
                 } else if (pr.ownerId === myId) {
                    // Still sync partial damage
-                   socketRef.current?.emit('unit_hit', { 
+                   socketProxyRef.current?.emit('unit_hit', { 
                        roomId: currentRoomRef.current?.id, 
                        targetPlayerId: e.id, 
                        damage: aoeD,
@@ -4250,7 +4250,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   createDust(impactP!.x, impactP!.y, g.color);
                   if (pr.ownerId === myId) {
-                      socketRef.current?.emit('unit_hit', { 
+                      socketProxyRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: g.ownerId, 
                           damage: aoeD, 
@@ -4279,14 +4279,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   createDust(t.pos.x, t.pos.y, t.color);
                   
                   // Sync hit to everyone else
-                  socketRef.current?.emit('building_hit', { 
+                  socketProxyRef.current?.emit('building_hit', { 
                       roomId: currentRoomRef.current?.id, 
                       buildingId: t.id, 
                       hp: t.hp 
                   });
                   
                   if (t.hp <= 0 && oldHp > 0) {
-                      socketRef.current?.emit('building_destroyed', { 
+                      socketProxyRef.current?.emit('building_destroyed', { 
                           roomId: currentRoomRef.current?.id, 
                           buildingId: t.id 
                       });
@@ -4315,7 +4315,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
         
         // ONLY THE OWNER (or host for AI/neutral towers) triggers the shooting event
-        const isOwner = t.ownerId === myId || (socketRef.current?.id && t.ownerId === socketRef.current.id);
+        const isOwner = t.ownerId === myId || (socketProxyRef.current?.id && t.ownerId === socketProxyRef.current.id);
         const shouldCalculate = isOwner || (!isMultiplayer && (t.ownerId === 'ai' || !t.ownerId)) || (isMultiplayer && isHostRef.current && (t.ownerId === 'ai' || !t.ownerId));
         if (!shouldCalculate) continue;
 
@@ -4405,7 +4405,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           if (t.ownerId === e.id || t.faction === e.faction || (t.type as any) === 'tunnel') return;
           if (getDistance(e.units[0].pos, t.pos) < 60 && e.isAttacking && e.attackTimer < 250) {
             const oldHp = t.hp; t.hp = Math.max(0, t.hp - 1); createDust(t.pos.x, t.pos.y, t.color); e.hasHitInCurrentSwing = true;
-            if (t.hp <= 0 && oldHp > 0 && (e.id === myId || isHostRef.current)) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+            if (t.hp <= 0 && oldHp > 0 && (e.id === myId || isHostRef.current)) socketProxyRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
           }
         });
       });
@@ -4418,7 +4418,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const newVillage = gameMapRef.current.futureVillages.shift();
             if (newVillage) {
               gameMapRef.current.villages.push(newVillage);
-              socketRef.current?.emit('village_spawned', { 
+              socketProxyRef.current?.emit('village_spawned', { 
                 roomId: currentRoomRef.current?.id, 
                 village: newVillage 
               });
@@ -4531,7 +4531,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       // --- CARAVAN REWRITE (Peaceful Escort) ---
       for (let i = caravansRef.current.length - 1; i >= 0; i--) {
         const c = caravansRef.current[i];
-        const sid = socketRef.current?.id || myIdRef.current;
+        const sid = socketProxyRef.current?.id || myIdRef.current;
         
         // Host-Authoritative Logic
         if (isHostRef.current) {
@@ -4616,7 +4616,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 const now = Date.now();
                 if (now - (c.lastAkceTime || 0) > 1000) { // Simple debounce
                     c.lastAkceTime = now;
-                    socketRef.current?.emit('sync_data', { 
+                    socketProxyRef.current?.emit('sync_data', { 
                         roomId: currentRoomRef.current?.id, 
                         caravanEscortRequest: c.id 
                     });
@@ -4653,7 +4653,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             createDust(nearbyGate.pos.x, nearbyGate.pos.y, '#fbbf24');
             
             // Sync with server
-            socketRef.current?.emit('toggle_gate', { 
+            socketProxyRef.current?.emit('toggle_gate', { 
                 roomId: currentRoomRef.current?.id, 
                 buildingId: nearbyGate.id, 
                 isOpen: nearbyGate.isOpen 
@@ -4687,7 +4687,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 createDust(nearbyGarrison.pos.x, nearbyGarrison.pos.y, nearbyGarrison.color);
                 
                 // Sync
-                socketRef.current?.emit('garrison_destroyed', { 
+                socketProxyRef.current?.emit('garrison_destroyed', { 
                     roomId: currentRoomRef.current?.id, 
                     garrisonId: nearbyGarrison.id, 
                     ownerId: myId 
@@ -4741,7 +4741,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   setIsSpectator(true);
                   
                   // Inform server
-                  socketRef.current?.emit('commander_death_detected', { 
+                  socketProxyRef.current?.emit('commander_death_detected', { 
                       roomId: currentRoomRef.current?.id, 
                       winnerId: null, 
                       loserId: myId 
@@ -4765,7 +4765,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         recentlyDestroyedGarrisons.current.set(g.id, Date.now());
         // Emit destroyed event regardless of ownership to ensure sync
         // If we killed a remote garrison, the owner MUST know so they stop hitting us
-        socketRef.current?.emit('garrison_destroyed', { 
+        socketProxyRef.current?.emit('garrison_destroyed', { 
             roomId: currentRoomRef.current?.id, 
             garrisonId: g.id, 
             ownerId: g.ownerId 
@@ -4832,7 +4832,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // LOCAL DEATH DETECTION (Robust server synchronization)
     if (ENGINE_STATE === 'GAME_ACTIVE' && !isSpectatorRef.current && p && p.units.length === 0) {
-        socketRef.current?.emit('commander_death_detected', { 
+        socketProxyRef.current?.emit('commander_death_detected', { 
             roomId: currentRoomRef.current?.id, 
             winnerId: null, 
             loserId: myId 
@@ -4862,7 +4862,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     }
 
     // Network Sync (33Hz for better combat accuracy)
-    if (isMultiplayer && p && socketRef.current && currentRoomRef.current && (Date.now() - lastSyncTimeRef.current > 30) && !isSpectatorRef.current) {
+    if (isMultiplayer && p && socketProxyRef.current && currentRoomRef.current && (Date.now() - lastSyncTimeRef.current > 30) && !isSpectatorRef.current) {
       lastSyncTimeRef.current = Date.now();
       
       // SYNC GARRISONS: Owner sends their own, Host sends AI-owned
@@ -4891,7 +4891,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           lastSyncPos: c.pos // Added current pos as lastSyncPos for others
       })) : undefined;
 
-      socketRef.current.emit('sync_data', {
+      socketProxyRef.current.emit('sync_data', {
         roomId: currentRoomRef.current.id, 
         id: myId, 
         x: p.units[0]?.pos.x || 0, 
@@ -5001,7 +5001,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Protection Circles (Drawn below everything)
       caravansRef.current.forEach(c => {
-        const sid = socketRef.current?.id || myIdRef.current;
+        const sid = socketProxyRef.current?.id || myIdRef.current;
         if (c.escortOwnerId === sid) {
            const ESCORT_RADIUS = 250;
            ctx.save();
@@ -5817,7 +5817,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ctx.translate(c.pos.x, c.pos.y);
         
         // Draw Escort Circle
-        const sid = socketRef.current?.id || myIdRef.current;
+        const sid = socketProxyRef.current?.id || myIdRef.current;
         const isMeEscorting = c.escortOwnerId === sid;
 
         if (isMeEscorting || (!c.escortOwnerId && playerRef.current && getDistance(c.pos, playerRef.current.units[0]?.pos) < 400)) {
@@ -6069,7 +6069,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       
       // If in lobby and local player is missing from entitiesRef for some reason, we draw them anyway
       if (ENGINE_STATE === 'LOBBY_WAITING' && !drawEntities.find(e => e.id === myId)) {
-          const sid = socketRef.current?.id || myId;
+          const sid = socketProxyRef.current?.id || myId;
           drawEntities.push({
             id: sid,
             name: nickname,
@@ -6090,8 +6090,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           });
       }
 
-      drawEntities.forEach(ent => {
-          if (ent.units.length === 0) return;
+          drawEntities.forEach(ent => {
           const head = ent.units[0];
           
           if (!isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER * 2)) return;
@@ -6103,7 +6102,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           }
 
           // Fog of War: Hide underground enemy units unless we are also underground
-          const sid = socketRef.current?.id || myId;
+          const sid = socketProxyRef.current?.id || myId;
           const isLocal = ent.id === sid;
           if (!isSpectatorRef.current && !isLocal && ent.isUnderground && (!p || !p.isUnderground)) {
             return; // Invisible (redundant but safe)
@@ -6465,8 +6464,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             </div>
             <button 
               onClick={() => {
-                if (socketRef.current) {
-                  socketRef.current.connect();
+                if (socketProxyRef.current) {
+                  socketProxyRef.current.connect();
                 } else {
                   window.location.reload();
                 }
@@ -6650,7 +6649,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           </span>
                         </div>
                         <button 
-                          onClick={() => socketRef.current?.emit('get_room_list')}
+                          onClick={() => socketProxyRef.current?.emit('get_room_list')}
                           className='flex items-center gap-1 md:gap-2 text-[8px] md:text-[10px] text-emerald-500 font-bold uppercase hover:text-emerald-400 transition-colors'>
                           <RefreshCw size={10} className={cn("md:w-3 md:h-3", isJoiningRoom ? 'animate-spin' : '')} />
                           {t.refreshList}
@@ -6728,9 +6727,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               <div className='mt-8 p-6 bg-black/40 rounded-[2rem] border border-white/5 text-[10px] font-mono text-indigo-400 w-64 text-left space-y-2 shadow-2xl'>
                 <div className='flex items-center justify-between border-b border-white/5 pb-2'>
                   <span className='text-slate-500 uppercase font-black tracking-tighter'>Socket Status</span>
-                  <span className={socketRef.current?.connected ? 'text-emerald-400' : 'text-red-400'}>{socketRef.current?.connected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+                  <span className={socketProxyRef.current?.connected ? 'text-emerald-400' : 'text-red-400'}>{socketProxyRef.current?.connected ? 'CONNECTED' : 'DISCONNECTED'}</span>
                 </div>
-                <div>ID: <span className='text-slate-300'>{socketRef.current?.id || 'NOT CONNECTED'}</span></div>
+                <div>ID: <span className='text-slate-300'>{socketProxyRef.current?.id || 'NOT CONNECTED'}</span></div>
                 <div>LATEST: <span className='text-slate-300'>{lastEvent}</span></div>
                 {isJoiningRoom && <div className='animate-pulse text-indigo-300'>WAITING FOR HANDSHAKE...</div>}
               </div>
@@ -6810,8 +6809,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 <button 
                   disabled={lobbyPlayers.length < 2}
                   onClick={() => {
-                    if (socketRef.current && currentRoom) {
-                      socketRef.current.emit('start_match_request', currentRoom.id);
+                    if (socketProxyRef.current && currentRoom) {
+                      socketProxyRef.current.emit('start_match_request', currentRoom.id);
                     }
                   }}
                   className={`px-8 py-4 md:px-16 md:py-6 rounded-[1.5rem] md:rounded-[2.5rem] font-black text-lg md:text-2xl uppercase tracking-widest transition-all shadow-2xl active:scale-95 ${
@@ -7050,21 +7049,21 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   <div className='grid grid-cols-3 gap-1 md:gap-2'>
                     <button 
-                      onClick={() => { g.mode = 'HOLD'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HOLD' }); }}
+                      onClick={() => { g.mode = 'HOLD'; socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HOLD' }); }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'HOLD' ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Shield size={10} className='md:w-4 md:h-4' />
                       <span className='text-[6px] md:text-[8px] font-black uppercase tracking-tighter'>{t.hold}</span>
                     </button>
                     <button 
-                      onClick={() => { g.mode = 'HUNT'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' }); }}
+                      onClick={() => { g.mode = 'HUNT'; socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' }); }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'HUNT' ? 'bg-red-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Sword size={10} className='md:w-4 md:h-4' />
                       <span className='text-[6px] md:text-[8px] font-black uppercase tracking-tighter'>{t.hunt}</span>
                     </button>
                     <button 
-                      onClick={() => { g.mode = 'RECALL'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' }); }}
+                      onClick={() => { g.mode = 'RECALL'; socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' }); }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'RECALL' ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Zap size={10} className='md:w-4 md:h-4' />
@@ -7229,8 +7228,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   playerRef.current.isAttacking = true; 
                   playerRef.current.attackTimer = 300; 
                   playerRef.current.attackCooldown = 500; 
-                  if (socketRef.current && currentRoom) {
-                    socketRef.current.emit('attack', { roomId: currentRoom.id });
+                  if (socketProxyRef.current && currentRoom) {
+                    socketProxyRef.current.emit('attack', { roomId: currentRoom.id });
                   }
                 } 
               }} className='w-20 h-20 md:w-24 md:h-24 rounded-full border-2 md:border-4 flex items-center justify-center transition-all bg-red-600/20 border-red-500/30 active:scale-90 shadow-xl shadow-red-500/10'>
