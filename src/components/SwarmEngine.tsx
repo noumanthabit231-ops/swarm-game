@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { cn } from '../utils/cn';
 
 import { EmpireType } from './SelectionScreen';
-import { Language, translations } from '../utils/i18n';
+import { Language, translations, EMPIRE_CURRENCIES } from '../utils/i18n';
 
 export let ENGINE_STATE = 'MENU';
 
@@ -70,8 +70,8 @@ const PROJECTILE_EXPLOSION_RADIUS = 50;
 // --- CONSTRUCTION CONSTANTS ---
 const GRID_SIZE = 70;
 const WALL_LENGTH = 100; // Physical length for blocking gaps in corners
-const DRAW_LENGTH = 74;  // Visual length for clean straight-line tiling (GRID_SIZE + 4)
-const WALL_THICKNESS = 36; // Physical thickness for collision
+const DRAW_LENGTH = 70;  // Exact match to GRID_SIZE for perfect tiling
+const WALL_THICKNESS = 30; // Physical thickness for collision
 const GRID_MARGIN = 2;
 
 const EMPIRE_COLORS = {
@@ -528,6 +528,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const cameraRef = useRef<Vector>({ x: 0, y: 0 });
   const mouseWorldPosRef = useRef<Vector>({ x: 0, y: 0 });
   const lastWallPosRef = useRef<Vector | null>(null);
+  const placementStartPosRef = useRef<Vector | null>(null);
+  const placementAxisRef = useRef<'x' | 'y' | null>(null);
+  const buildingMapRef = useRef<Map<string, Tower>>(new Map());
   const lastGateToggleTime = useRef<number>(0);
   const [isPlacingWall, setIsPlacingWall] = useState(false);
   const [isPlacingGate, setIsPlacingGate] = useState(false);
@@ -547,6 +550,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const [stats, setStats] = useState({ total_battles_count: 0, wins_count: 0, total_recruits: 0, total_kills: 0 });
   const [matchStats, setMatchStats] = useState({ duration: '00:00', maxArmy: 1, towersBuilt: 0, kills: 0 });
   const [matchResult, setMatchResult] = useState<{ isWinner: boolean, winnerName: string } | null>(null);
+  const [killerName, setKillerName] = useState<string | null>(null);
   const towersBuiltRef = useRef(0);
   const maxArmyRef = useRef(1);
   const killsRef = useRef(0);
@@ -566,6 +570,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const cameraZoomRef = useRef(1);
   const [serverCapacity, setServerCapacity] = useState({ active: 0, max: 1000 });
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  const isLeavingRef = useRef(false);
 
   // Spatial Hash Grid for performance optimization
   const GRID_CELL_SIZE = 100;
@@ -622,6 +627,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const [roomForm, setRoomForm] = useState({ name: '', password: '', limit: 5 });
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const [passwordModalRoom, setPasswordModalRoom] = useState<Room | null>(null);
+  const [passwordInput, setPasswordInput] = useState('');
   
   // Guard Timer for Loading/Joining states
   useEffect(() => {
@@ -650,6 +657,24 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const [networkStatus, setNetworkStatus] = useState<'Connecting...' | 'Ready' | 'Error'>('Connecting...');
   const [lastEvent, setLastEvent] = useState<string>('Initializing...');
 
+  const getKillerName = (id: string | null): string => {
+    if (!id) return 'Enemy';
+    
+    // Check local entities first (active in game)
+    const ent = entitiesRef.current.find(e => e.id === id);
+    if (ent) return ent.name;
+    
+    // Check lobby players (synced names)
+    const lobbyP = lobbyPlayersRef.current.find(p => p.id === id);
+    if (lobbyP) return lobbyP.name;
+    
+    // Check player skins cache (historical names)
+    const skin = playerSkinsRef.current.get(id);
+    if (skin && skin.name) return skin.name;
+    
+    return 'Enemy';
+  };
+
   const syncRemotePlayers = useCallback((players: LobbyPlayer[]) => {
     const currentIds = new Set(players.map(p => p.id));
     
@@ -665,15 +690,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     }
 
-    // Add new players
+    // Add or Update players
     players.forEach(p => {
       const myIdVal = socketRef.current?.id || myId;
-      if (p.id !== myIdVal && !remotePlayersRef.current.has(p.id)) {
-        const cached = playerSkinsRef.current.get(p.id);
-        const factionColor = cached?.faction || '#94a3b8';
-        const empireId = p.empireId || cached?.empireId || 'neutral';
-        const playerName = cached?.name || p.name;
-        
+      if (p.id === myIdVal) return;
+      
+      const cached = playerSkinsRef.current.get(p.id);
+      const factionColor = cached?.faction || '#94a3b8';
+      const empireId = p.empireId || cached?.empireId || 'neutral';
+      const playerName = p.name || cached?.name || `Janissary_${p.id.substring(0, 3)}`;
+
+      if (!remotePlayersRef.current.has(p.id)) {
         const newEnt: Entity = {
           id: p.id,
           name: playerName,
@@ -695,6 +722,13 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         };
         remotePlayersRef.current.set(p.id, newEnt);
         entitiesRef.current.push(newEnt);
+      } else {
+        // Update existing remote player data if needed (like name)
+        const existing = remotePlayersRef.current.get(p.id);
+        if (existing) {
+          existing.name = playerName;
+          existing.empireId = empireId;
+        }
       }
     });
   }, [myId]);
@@ -792,6 +826,25 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       if (roomData.players) setLeaderboard(roomData.players.map((p: LobbyPlayer) => ({ name: p.name, score: 0 })));
     });
 
+    socket.on('remote_building_hit', (data: { buildingId: string, hp: number }) => {
+      const targetId = String(data.buildingId);
+      const b = towersRef.current.find(t => String(t.id) === targetId);
+      if (b) {
+        b.hp = data.hp;
+        createDust(b.pos.x, b.pos.y, b.color);
+      }
+    });
+
+    socket.on('error', (msg: string) => {
+      console.error("[SOCKET ERROR]", msg);
+      showError(msg);
+      // Reset connection states
+      setIsCreatingRoom(false);
+      setIsJoiningRoom(false);
+      setGameState('MENU');
+      ENGINE_STATE = 'MENU';
+    });
+
     socket.on('remote_building_destroyed', (data: { buildingId: string }) => {
       const targetId = String(data.buildingId || data);
       towersRef.current = towersRef.current.filter(t => {
@@ -872,10 +925,30 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     });
 
-    socket.on('you_died', () => {
+    socket.on('you_died', (data?: { winnerName?: string, winnerId?: string }) => {
+      console.log("[SOCKET] Received 'you_died' from server.");
       if (ENGINE_STATE === 'GAME_ACTIVE') {
+        const killer = data?.winnerName && data.winnerName !== 'Enemy' ? data.winnerName : getKillerName(data?.winnerId || null);
+        setMatchResult({ isWinner: false, winnerName: killer });
+        setKillerName(killer);
+        
+        const endTime = Date.now();
+        endTimeRef.current = endTime;
+        const start = startTimeRef.current || (endTime - 1000);
+        const durationSecs = Math.floor((endTime - start) / 1000);
+        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
+        const secs = (durationSecs % 60).toString().padStart(2, '0');
+        
+        setMatchStats({
+          duration: `${mins}:${secs}`,
+          maxArmy: maxArmyRef.current,
+          towersBuilt: towersBuiltRef.current,
+          kills: killsRef.current
+        });
+
         ENGINE_STATE = 'MATCH_RESULTS';
         setGameState('MATCH_RESULTS');
+        gameStateRef.current = 'MATCH_RESULTS';
         saveFinalStats(false);
         setIsSpectator(true);
       }
@@ -883,11 +956,16 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     socket.on('player_eliminated', (data: { loserId: string, winnerId?: string, winnerName: string }) => {
       console.log("[SOCKET DEBUG] player_eliminated:", data);
-      const mySid = socketRef.current?.id || myId;
+      const mySid = socketRef.current?.id || myIdRef.current;
       
-      // If the loser is us, we show the defeat screen
-      if (data.loserId === mySid) {
-        setMatchResult({ isWinner: false, winnerName: data.winnerName || 'Enemy' });
+      // CRITICAL: Ensure we use the most reliable ID comparison
+      const isItMe = data.loserId === mySid || (myIdRef.current && data.loserId === myIdRef.current);
+
+      if (isItMe) {
+        console.log("[DEATH] Server confirmed our elimination.");
+        const killer = data.winnerName && data.winnerName !== 'Enemy' ? data.winnerName : getKillerName(data.winnerId || null);
+        setMatchResult({ isWinner: false, winnerName: killer });
+        setKillerName(killer);
         
         const endTime = Date.now();
         endTimeRef.current = endTime;
@@ -949,10 +1027,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socket.on('game_over_final', (data: { winnerId: string, winnerName: string }) => {
       console.log("[SOCKET DEBUG] game_over_final:", data);
       
-      const mySid = socketRef.current?.id || myId;
+      const mySid = socketRef.current?.id || myIdRef.current;
       
       // If the server says we won, OR if we are the only one left and the winner is null (Draw fallback)
-      const isWinner = data.winnerId === mySid || (data.winnerId === null && !isSpectatorRef.current);
+      const isWinner = data.winnerId === mySid || (myIdRef.current && data.winnerId === myIdRef.current) || (data.winnerId === null && !isSpectatorRef.current);
       
       // Force trigger match results if we are the winner or we are somehow still active
       if (isWinner || gameStateRef.current === 'GAME_ACTIVE') {
@@ -981,13 +1059,27 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('room_update', (room: Room) => {
+      if (isLeavingRef.current) return;
+
       setLastEvent('room_update');
       setCurrentRoom(room);
       currentRoomRef.current = room; // Sync ref immediately
       
       const hostFlag = room.hostId === socket.id;
-      setIsHost(hostFlag);
-      isHostRef.current = hostFlag;
+      if (hostFlag !== isHostRef.current) {
+        setIsHost(hostFlag);
+        isHostRef.current = hostFlag;
+        
+        // UI Notification if leadership changed
+        if (hostFlag && ENGINE_STATE === 'LOBBY_WAITING') {
+          particlesRef.current.push({
+            pos: { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+            vel: { x: 0, y: -2 },
+            life: 3, maxLife: 3, color: '#fbbf24', type: 'text',
+            text: 'YOU ARE NOW THE HOST!'
+          });
+        }
+      }
       
       const players = room.players || [];
       setLobbyPlayers(players);
@@ -998,7 +1090,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         setLeaderboard(room.players.map(p => ({ name: p.name, score: 0 })));
       }
       
-      if (ENGINE_STATE === 'CONNECTING' || ENGINE_STATE === 'MENU') {
+      if (ENGINE_STATE === 'CONNECTING' || (ENGINE_STATE === 'MENU' && isJoiningRoom)) {
         ENGINE_STATE = 'LOBBY_WAITING';
         setGameState('LOBBY_WAITING');
         gameStateRef.current = 'LOBBY_WAITING';
@@ -1183,7 +1275,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         });
 
                         // FORCED LOCAL UI TRIGGER
-                        setMatchResult({ isWinner: false, winnerName: data.attackerName || 'Enemy' });
+                        const killer = data.attackerName && data.attackerName !== 'Enemy' ? data.attackerName : getKillerName(data.attackerId || null);
+                        setMatchResult({ isWinner: false, winnerName: killer });
+                        setKillerName(killer);
                         
                         const endTime = Date.now();
                         endTimeRef.current = endTime;
@@ -1220,7 +1314,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     if (p.units.length === 0 && (ENGINE_STATE === 'GAME_ACTIVE' || gameStateRef.current === 'GAME_ACTIVE')) {
                       // IMMEDIATE UI FALLBACK (If server doesn't respond or player dies to garrison)
                       if (!matchResult) {
-                        setMatchResult({ isWinner: false, winnerName: data.attackerName || 'Enemy' });
+                        const killer = data.attackerName && data.attackerName !== 'Enemy' ? data.attackerName : getKillerName(data.attackerId || null);
+                        setMatchResult({ isWinner: false, winnerName: killer });
+                        setKillerName(killer);
                         
                         const endTime = Date.now();
                         endTimeRef.current = endTime;
@@ -1733,6 +1829,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       socket.off('room_created');
       socket.off('join_success');
       socket.off('remote_building_destroyed');
+      socket.off('remote_building_hit');
       socket.off('remote_gate_toggled');
       socket.off('remote_tower_fire');
       socket.off('remote_building_placed');
@@ -1767,6 +1864,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     }
   }, [gameState, isMultiplayer, isHost, currentRoom]);
 
+  const getEmpireCurrency = (eid?: string) => {
+    const empireId = eid || playerRef.current?.empireId || initialEmpire.id;
+    return EMPIRE_CURRENCIES[empireId] || 'Akce';
+  };
+
   const startLobby = () => {
     if (!roomForm.name.trim() || !nickname.trim() || !socketRef.current) return;
     setIsCreatingRoom(true);
@@ -1776,25 +1878,39 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socketRef.current.emit('create_room', {
       name: roomForm.name,
       password: roomForm.password,
-      limit: roomForm.limit
+      limit: roomForm.limit,
+      playerName: nickname // Send player name during creation
     });
   };
 
   const joinRoom = (room: Room) => {
     if (!socketRef.current) return;
-    const password = room.password ? prompt('Enter room password:') : '';
-    if (room.password && password === null) return;
+    
+    // If room has a password, show our custom modal instead of prompt
+    if (room.password) {
+      setPasswordModalRoom(room);
+      setPasswordInput('');
+      return;
+    }
+    
+    submitJoinRequest(room.id, '');
+  };
+
+  const submitJoinRequest = (roomId: string | number, password: string) => {
+    if (!socketRef.current) return;
     
     setIsJoiningRoom(true);
     setIsMultiplayer(true);
     setGameState('CONNECTING');
     ENGINE_STATE = 'CONNECTING';
     
-    if (room.password) {
-      socketRef.current.emit('join_room', { roomId: String(room.id), password });
-    } else {
-      socketRef.current.emit('join_room', String(room.id));
-    }
+    socketRef.current.emit('join_room', { 
+      roomId: String(roomId), 
+      password: password || '',
+      playerName: nickname // Send player name during join
+    });
+    
+    setPasswordModalRoom(null); // Close modal if it was open
   };
 
   useEffect(() => {
@@ -1809,17 +1925,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
   const leaveRoom = () => {
     if (socketRef.current && currentRoom) {
-      // Send a final fast sync packet to others to remove us immediately
-      socketRef.current.emit('sync_data', {
-        roomId: currentRoom.id,
-        id: socketRef.current.id,
-        isLeaving: true,
-        unitCount: 0
-      });
+      isLeavingRef.current = true;
       
       // Standard leave logic
       socketRef.current.emit('leave_room', String(currentRoom.id));
-      socketRef.current.emit('player_left', socketRef.current.id);
+      
+      // Clear flag after a delay to allow future joins
+      setTimeout(() => {
+        isLeavingRef.current = false;
+      }, 1000);
     }
     
     // Immediate local cleanup to stop sync_data loop
@@ -2206,6 +2320,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       
       // Clear ghost positions
       lastWallPosRef.current = null;
+      placementStartPosRef.current = null;
+      placementAxisRef.current = null;
     }
     };
     window.addEventListener('keydown', hkd);
@@ -2280,11 +2396,19 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (isSpectator) {
       setIsDraggingCamera(true);
     }
+    
+    // Axis locking for walls/gates
+    if (isPlacingWall || isPlacingGate) {
+      placementStartPosRef.current = { ...mouseWorldPosRef.current };
+      placementAxisRef.current = null;
+    }
   };
 
   const handleMouseUp = () => {
     isMouseDownRef.current = false;
     setIsDraggingCamera(false);
+    placementStartPosRef.current = null;
+    placementAxisRef.current = null;
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -2330,13 +2454,33 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (gameState !== 'GAME_ACTIVE' || !playerRef.current || isSpectatorRef.current) return;
     if (!isPlacingWall && !isPlacingGate && !isPlacingTower) return;
 
+    let targetX = worldX;
+    let targetY = worldY;
+
+    // Axis locking for continuous building
+    if (isMouseDownRef.current && (isPlacingWall || isPlacingGate) && placementStartPosRef.current) {
+        const dx = Math.abs(worldX - placementStartPosRef.current.x);
+        const dy = Math.abs(worldY - placementStartPosRef.current.y);
+        
+        // Only set axis if we've moved significantly
+        if (!placementAxisRef.current && (dx > 20 || dy > 20)) {
+            placementAxisRef.current = dx > dy ? 'x' : 'y';
+        }
+
+        if (placementAxisRef.current === 'x') {
+            targetY = placementStartPosRef.current.y;
+        } else if (placementAxisRef.current === 'y') {
+            targetX = placementStartPosRef.current.x;
+        }
+    }
+
     const p = playerRef.current;
     const bType = isPlacingWall ? 'wall' : (isPlacingGate ? 'gate' : 'tower');
     const price = UNIT_PRICES[bType];
     
     if (p.akce >= price) {
-      const snapX = Math.floor(worldX / GRID_SIZE) * GRID_SIZE;
-      const snapY = Math.floor(worldY / GRID_SIZE) * GRID_SIZE;
+      const snapX = Math.floor(targetX / GRID_SIZE) * GRID_SIZE;
+      const snapY = Math.floor(targetY / GRID_SIZE) * GRID_SIZE;
       const finalX = snapX + GRID_SIZE / 2;
       const finalY = snapY + GRID_SIZE / 2;
 
@@ -2355,13 +2499,20 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       let rotation = 0;
       if (isPlacingWall || isPlacingGate) {
         const n = getBuildingNeighbors(finalX, finalY);
-        // Smart Rotation & Connection logic:
-        if (n.top || n.bottom) {
+        // Priority 1: Axis Lock (for straight lines while dragging)
+        if (placementAxisRef.current === 'x') {
+          rotation = 0;
+        } else if (placementAxisRef.current === 'y') {
+          rotation = 90;
+        }
+        // Priority 2: Snap to existing neighbors
+        else if (n.top || n.bottom) {
           rotation = 90;
         } 
         else if (n.left || n.right) {
           rotation = 0;
         }
+        // Priority 3: Fallback to last placed wall relative position
         else if (lastWallPosRef.current) {
           const dx = Math.abs(finalX - lastWallPosRef.current.x);
           const dy = Math.abs(finalY - lastWallPosRef.current.y);
@@ -2808,11 +2959,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
 
 
+  const lastFrameTimeRef = useRef<number>(performance.now());
   const update = useCallback(() => {
     if (ENGINE_STATE !== 'GAME_ACTIVE' && ENGINE_STATE !== 'LOBBY_WAITING') {
       frameId.current = requestAnimationFrame(update);
+      lastFrameTimeRef.current = performance.now();
       return;
     }
+
+    const now_frame = performance.now();
+    const dt = Math.min(now_frame - lastFrameTimeRef.current, 100); // Cap dt at 100ms to avoid huge jumps
+    lastFrameTimeRef.current = now_frame;
 
     const p = playerRef.current;
     
@@ -2834,7 +2991,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     const currentWorldSize = worldSizeRef.current;
     if (shakeRef.current > 0) shakeRef.current *= 0.9;
     frameCountRef.current++; // Increment frame counter
-    const dt = 16.67; // Defined at start of loop
+    
+    const dt_scale = dt / 16.67; // Normalize to 60FPS baseline for original speed balance
 
     // 1. State & Cooldowns (all entities)
     entitiesRef.current.forEach(ent => {
@@ -2852,15 +3010,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (ent.attackCooldown > 0) ent.attackCooldown -= dt;
         if (ent.weightSlowdown > 0) ent.weightSlowdown -= dt;
         
-        // Income
-        if (Date.now() - (ent.lastAkceTime || 0) > 1000) {
-          ent.akce += 1; ent.lastAkceTime = Date.now();
+        // Income (Reliable income using dt)
+        ent.incomeTimer = (ent.incomeTimer || 0) + dt;
+        if (ent.incomeTimer >= 1000) {
+          ent.akce += 1;
+          ent.incomeTimer -= 1000;
           if (ent.id === myId) setPlayerAkce(ent.akce);
         }
         
         // Dash cost & effect
         if (ent.isDashing && ent.units.length > MIN_UNITS_TO_DASH) {
-          ent.score -= DASH_COST_PER_FRAME;
+          ent.score -= DASH_COST_PER_FRAME * dt_scale;
           if (Math.floor(ent.score) < ent.units.length && ent.units.length > 1) {
             ent.units.pop();
             if (ent.id === myId) setScore(ent.units.length);
@@ -2877,6 +3037,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         setPlayerAkce(lp.akce);
         setTimeout(() => { if (playerRef.current) playerRef.current.isDashing = false; }, 300);
     }
+    if (lp && lp.splitCooldown > 0) lp.splitCooldown -= dt;
 
     garrisonsRef.current.forEach(g => {
         if (g.attackTimer > 0) {
@@ -2890,8 +3051,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // 2. Camera Update
     if (!isSpectatorRef.current && p && p.units[0]) {
-      cameraRef.current.x += (p.units[0].pos.x - cameraRef.current.x) * 0.1;
-      cameraRef.current.y += (p.units[0].pos.y - cameraRef.current.y) * 0.1;
+      cameraRef.current.x += (p.units[0].pos.x - cameraRef.current.x) * 0.1 * dt_scale;
+      cameraRef.current.y += (p.units[0].pos.y - cameraRef.current.y) * 0.1 * dt_scale;
     }
 
     // Pre-initialize garrison map for use in movement/AI logic
@@ -2908,22 +3069,23 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         // --- INTERPOLATION FOR REMOTE PLAYERS ---
         if (!isLocalPlayer && ent.targetPos) {
             // Smoothly move remote head unit to targetPos
-            head.pos.x += (ent.targetPos.x - head.pos.x) * 0.35;
-            head.pos.y += (ent.targetPos.y - head.pos.y) * 0.35;
+            const lerpFactor = 1 - Math.pow(1 - 0.35, dt_scale);
+            head.pos.x += (ent.targetPos.x - head.pos.x) * lerpFactor;
+            head.pos.y += (ent.targetPos.y - head.pos.y) * lerpFactor;
             
             // Smoothly rotate remote entity to targetAngle
             if (ent.targetAngle !== undefined) {
                 let diff = ent.targetAngle - ent.facingAngle;
                 while (diff > Math.PI) diff -= Math.PI * 2;
                 while (diff < -Math.PI) diff += Math.PI * 2;
-                ent.facingAngle += diff * 0.25;
+                ent.facingAngle += diff * 0.25 * dt_scale;
             }
         }
         
         const mass = ent.units.length;
         const inertia = mass < 10 ? 1 : 1 + (mass - 10) * MASS_INERTIA_FACTOR;
         const spd = (ent.isDashing && ent.units.length > MIN_UNITS_TO_DASH ? PLAYER_SPEED * DASH_MULTIPLIER : PLAYER_SPEED);
-        const accel = (ent.panicTimer ? BASE_ACCEL * 4 : BASE_ACCEL) / inertia;
+        const accel = ((ent.panicTimer ? BASE_ACCEL * 4 : BASE_ACCEL) / inertia) * dt_scale;
 
         let targetVel = { x: 0, y: 0 };
         if (isLocalPlayer) {
@@ -3020,8 +3182,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ent.velocity = ent.velocity || { x: 0, y: 0 };
         ent.velocity.x += (targetVel.x - ent.velocity.x) * accel;
         ent.velocity.y += (targetVel.y - ent.velocity.y) * accel;
-        ent.velocity.x *= BASE_FRICTION;
-        ent.velocity.y *= BASE_FRICTION;
+        ent.velocity.x *= Math.pow(BASE_FRICTION, dt_scale);
+        ent.velocity.y *= Math.pow(BASE_FRICTION, dt_scale);
 
         if (targetVel.x !== 0 || targetVel.y !== 0) {
             const targetAngle = Math.atan2(targetVel.y, targetVel.x);
@@ -3030,12 +3192,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             while (diff > Math.PI) diff -= Math.PI * 2;
             // FIXED: Reverting to mass-based inertia as requested by user.
             // Larger armies now turn slower again.
-            ent.facingAngle = (ent.facingAngle || 0) + diff * (0.15 / inertia);
+            ent.facingAngle = (ent.facingAngle || 0) + diff * (0.15 / inertia) * dt_scale;
         }
 
         if (ent.id === myId || (socketRef.current?.id && ent.id === socketRef.current.id)) {
             // Player-specific move speed with "Combat Charge"
-            let finalSpd = spd;
+            let finalSpd = spd * dt_scale;
             if (ent.isAttacking && ent.cachedMinDist && ent.cachedMinDist < 150) {
                 // Charge! 25% speed boost when closing in on a target
                 finalSpd *= 1.25;
@@ -3044,11 +3206,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const nextPos = resolveCollision(head.pos, { x: ent.velocity.x * finalSpd, y: ent.velocity.y * finalSpd }, gameMapRef.current.obstacles, towersRef.current);
             if (nextPos.x > 0 && nextPos.x < currentWorldSize) head.pos.x = nextPos.x;
             if (nextPos.y > 0 && nextPos.y < currentWorldSize) head.pos.y = nextPos.y;
-        } else if (ent.type === 'player') {
-            // Remote player smoothing
-            head.pos.x += ent.velocity.x * spd;
-            head.pos.y += ent.velocity.y * spd;
+        } else if (ent.type === 'ai' && !isMultiplayer) {
+            // AI movement
+            head.pos.x += ent.velocity.x * spd * dt_scale;
+            head.pos.y += ent.velocity.y * spd * dt_scale;
         }
+        // Note: Remote players (non-AI) only use interpolation (above), no velocity move here to avoid double movement
         ent.lastPos = { ...head.pos };
 
         // Swarm cohesion for all units
@@ -3190,6 +3353,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
                     // FIXED: Immediate target acquisition on transition to prevent "stuck" frames
                     shouldRunHeavyLogic = true; 
+                } else {
+                    // Also check for buildings to transition to HUNT
+                    towersRef.current.forEach(t => {
+                        if (t.ownerId === g.ownerId || t.color === g.color) return;
+                        const d = getDistance(g.pos, t.pos);
+                        if (d < 450) {
+                            g.mode = 'HUNT';
+                            if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
+                            shouldRunHeavyLogic = true;
+                        }
+                    });
                 }
             }
         }
@@ -3222,6 +3396,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         }
                     }
                 }
+
+                // NEW: Also check for nearest enemy buildings
+                towersRef.current.forEach(t => {
+                    if (t.ownerId === g.ownerId || t.color === g.color) return;
+                    const d = getDistance(g.pos, t.pos);
+                    if (d < minDist) {
+                        minDist = d;
+                        targetPos = t.pos;
+                    }
+                });
+
                 g.targetPos = targetPos; // Cache for throttled frames
             } else {
                 targetPos = g.targetPos;
@@ -3491,7 +3676,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
                           damage: damageVal, 
-                          attackerId: myId, // Identify the attacker
+                          attackerId: myId,
+                          attackerName: nickname, // Always send our name
                           garrisonId: isTargetGarrison ? n.entityId.substring(2) : undefined 
                       });
                   }
@@ -3546,7 +3732,29 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             }
             g.hasNearbyEnemies = hasNearby;
         }
-        if (!g.hasNearbyEnemies) return;
+        if (!g.hasNearbyEnemies) {
+            // Even if no nearby units, check for buildings to attack
+            const meleeUnitsG = g.units.slice(0, 8);
+            meleeUnitsG.forEach(u2 => {
+                towersRef.current.forEach(t => {
+                    if (t.ownerId === g.ownerId || t.color === g.color) return;
+                    const d = getDistance(u2.pos, t.pos);
+                    if (d < 80) {
+                        const now = Date.now();
+                        if (now - (t.lastInteractTime || 0) < 500) return;
+                        t.lastInteractTime = now;
+                        const oldHp = t.hp;
+                        t.hp = Math.max(0, t.hp - 1);
+                        createDust(t.pos.x, t.pos.y, t.color);
+                        if (isOwner) {
+                            socketRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
+                            if (t.hp <= 0 && oldHp > 0) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+                        }
+                    }
+                });
+            });
+            return;
+        }
 
         // OPTIMIZATION: Only the first 8 units of a garrison perform melee checks (reduced from 12)
         const meleeUnitsG = g.units.slice(0, 8);
@@ -3554,6 +3762,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           if (unitsToRemove.has(u2.id)) return;
           if ((frameCountRef.current + ui2) % 3 !== 0) return; // Throttled checks
           
+          // --- Unit vs Unit logic (existing) ---
           const gx = (u2.pos.x / GRID_CELL_SIZE) | 0;
           const gy = (u2.pos.y / GRID_CELL_SIZE) | 0;
           for (let dx = -1; dx <= 1; dx++) {
@@ -3585,42 +3794,28 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 const isTargetCmd = !isTargetGarrison && entityMap.get(n.entityId)?.units[0] === n.unit;
                 const amIAttacker = g.ownerId === myId, amIDefender = tOwnerId === myId;
                 
-        // FIXED: Explicit attack for player-owned garrisons, but AUTO-ATTACK if enemies are nearby in HOLD mode.
-        const isAI = g.ownerId === 'ai';
-        const isHoldMode = g.mode === 'HOLD';
-        const hasEnemyInEngageRange = isHoldMode && g.hasNearbyEnemies;
-        const isActive = (g.attackTimer > 0 || hasEnemyInEngageRange) && (g.swingKills || 0) < 3;
-        const isAuto = isAI && !g.attackTimer && (d < 50 && Math.random() < 0.01);
+                const isAI = g.ownerId === 'ai';
+                const isHoldMode = g.mode === 'HOLD';
+                const hasEnemyInEngageRange = isHoldMode && g.hasNearbyEnemies;
+                const isActive = (g.attackTimer > 0 || hasEnemyInEngageRange) && (g.swingKills || 0) < 3;
+                const isAuto = isAI && !g.attackTimer && (d < 50 && Math.random() < 0.01);
 
                 if (isActive || isAuto) {
                   if (amIDefender && spawnProtectionRef.current) continue;
-                  
-                  // GLOBAL DAMAGE COOLDOWN FOR TARGET (Controlled by Attacker)
                   const now = Date.now();
-                  // FIXED: Garrison-vs-Garrison combat is now much faster and deterministic.
-                  // Reduced cooldown for garrisons hitting other garrisons to make it decisive.
                   const isTargetPlayer = !isTargetGarrison && entityMap.get(n.entityId)?.type === 'player';
                   const cooldown = isTargetGarrison ? 20 : (isTargetPlayer ? 750 : (isTargetCmd ? 300 : 150));
                   if (now - (targetObj.lastDamageTime || 0) < cooldown) continue;
 
-                  // Limit total hits per frame for the whole garrison to prevent instant wipe
                   const garrisonHitKey = `hit_g_${g.id}`;
                   if (!frameDamageMap.has(garrisonHitKey)) frameDamageMap.set(garrisonHitKey, 0);
-                  
-                  // Allow more kills per frame if it's garrison-vs-garrison to speed up resolution
                   const frameLimit = isTargetGarrison ? 3 : (isActive ? 2 : 1);
                   if (frameDamageMap.get(garrisonHitKey)! >= frameLimit) continue;
 
-                  // DETERMINISTIC CLASH: If two garrisons are fighting, the larger one 
-                  // should have a significant advantage to ensure it wins.
                   if (isTargetGarrison) {
                       const targetG = targetObj as Garrison;
-                      if (g.units.length < targetG.units.length && Math.random() < 0.3) {
-                          // If we are smaller, we might miss or get blocked more often
-                          continue;
-                      }
+                      if (g.units.length < targetG.units.length && Math.random() < 0.3) continue;
                   }
-
                   if (!isTargetGarrison && Math.random() < 0.5) continue;
                   
                   const damageVal = 100; // Instakill
@@ -3628,41 +3823,28 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   const isAttackerHostAI = isHostRef.current && g.ownerId === 'ai';
                   
                   if (isAttackerLocal || isAttackerHostAI) {
-                    // FIXED: Garrisons now use 'unit_hit' when targeting a player to trigger proper cooldowns on target.
                     if (!isTargetGarrison) {
                       socketRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
-                          damage: damageVal,
-                          attackerId: g.ownerId,
+                          damage: damageVal, 
+                          attackerId: g.ownerId, 
+                          attackerName: g.name || 'Garrison',
                           attackerGarrisonId: g.id 
                       });
                     } else {
-                      socketRef.current?.emit('garrison_hit', { 
-                          roomId: currentRoomRef.current?.id, 
-                          targetPlayerId: tOwnerId, 
-                          damage: damageVal, 
-                          garrisonId: n.entityId.substring(2),
-                          attackerId: g.ownerId,
-                          attackerGarrisonId: g.id
-                      });
+                      socketRef.current?.emit('garrison_hit', { roomId: currentRoomRef.current?.id, targetPlayerId: tOwnerId, damage: damageVal, garrisonId: n.entityId.substring(2), attackerId: g.ownerId, attackerGarrisonId: g.id });
                     }
-                    // REMOVED: Money reward for killing enemy units (Per Sultan's request)
-                    // if (isAttackerLocal) setPlayerAkce(prev => prev + 5);
                   }
                   
-                  // Apply local damage
                   n.unit.hp -= damageVal;
                   targetObj.lastDamageTime = now;
                   frameDamageMap.set(garrisonHitKey, (frameDamageMap.get(garrisonHitKey) || 0) + 1);
 
                   if (n.unit.hp <= 0) {
-                      // CRITICAL: VISUAL PREDICTION for Garrisons
-                      // If I am the attacker (my garrison hit someone) OR the host calculating AI, remove it locally.
                       if (isTargetGarrison || tOwnerId === myId || !isMultiplayer || isAttackerLocal || isAttackerHostAI) {
                           unitsToRemove.add(n.unit.id);
                       }
-
                       g.swingKills = (g.swingKills || 0) + 1;
                       createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
                   }
@@ -3670,6 +3852,24 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               }
             }
           }
+
+          // --- Unit vs Building logic (correctly placed here) ---
+          towersRef.current.forEach(t => {
+            if (t.ownerId === g.ownerId || t.color === g.color) return;
+            const d = getDistance(u2.pos, t.pos);
+            if (d < 80) {
+              const now = Date.now();
+              if (now - (t.lastInteractTime || 0) < 500) return;
+              t.lastInteractTime = now;
+              const oldHp = t.hp;
+              t.hp = Math.max(0, t.hp - 1);
+              createDust(t.pos.x, t.pos.y, t.color);
+              if (isOwner) {
+                socketRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
+                if (t.hp <= 0 && oldHp > 0) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+              }
+            }
+          });
         });
       });
 
@@ -3714,21 +3914,44 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 e.units[ui].hp -= aoeD;
                 hitCount++;
                 if (e.units[ui].hp <= 0) {
-                  // FIXED: Projectile AoE should only trigger death if the commander is the LAST unit.
-                  if (ui === 0 && e.units.length === 1 && (e.id === myId || !isMultiplayer)) {
-                      socketRef.current?.emit('commander_death_detected', { 
-                        roomId: currentRoomRef.current?.id, 
-                        winnerId: pr.ownerId === 'remote'?null:pr.ownerId, 
-                        loserId: e.id 
-                      });
-                  }
-                  
                   // VISUAL PREDICTION: Remove locally if we are attacker or owner
                   if (ui !== 0 || e.id === myId || !isMultiplayer || pr.ownerId === myId) {
                       e.units.splice(ui, 1);
                   }
                   
                   createDust(impactP!.x, impactP!.y, e.color);
+                  
+                  // SERVER SYNC: Inform the target player they took damage
+                  if (pr.ownerId === myId) {
+                      socketRef.current?.emit('unit_hit', { 
+                          roomId: currentRoomRef.current?.id, 
+                          targetPlayerId: e.id, 
+                          damage: aoeD,
+                          unitIndex: ui,
+                          attackerId: pr.ownerId,
+                          attackerName: nickname
+                      });
+                  }
+                  
+                  // SERVER SYNC: Any client that detects a commander death should report it.
+                  if (ui === 0 && e.units.length === 1) {
+                      console.log(`[DEATH] Detected death of ${e.id} via projectile.`);
+                      socketRef.current?.emit('commander_death_detected', { 
+                        roomId: currentRoomRef.current?.id, 
+                        winnerId: pr.ownerId === 'remote'?null:pr.ownerId, 
+                        loserId: e.id 
+                      });
+                  }
+                } else if (pr.ownerId === myId) {
+                   // Still sync partial damage
+                   socketRef.current?.emit('unit_hit', { 
+                       roomId: currentRoomRef.current?.id, 
+                       targetPlayerId: e.id, 
+                       damage: aoeD,
+                       unitIndex: ui,
+                       attackerId: pr.ownerId,
+                       attackerName: nickname
+                   });
                 }
               }
             }
@@ -3754,7 +3977,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           targetPlayerId: g.ownerId, 
                           damage: aoeD, 
                           garrisonId: g.id,
-                          attackerId: myId
+                          attackerId: t.ownerId,
+                          attackerName: t.name || 'Tower'
                       });
                   }
                 }
@@ -3762,12 +3986,41 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             }
           });
 
-          // Buildings still take small damage
+          // Buildings still take damage (5 hits to destroy a tower)
           towersRef.current.forEach(t => {
             if (t.ownerId === pr.ownerId || t.color === pr.color) return;
-            if (getDistance(impactP as Vector, t.pos) < 40) {
-              const oldHp = t.hp; t.hp = Math.max(0, t.hp - 1); createDust(t.pos.x, t.pos.y, t.color);
-              if (t.hp <= 0 && oldHp > 0 && (pr.ownerId === myId || isHost)) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+            // Increased damage radius to 60 to ensure it catches the tower that triggered impactP
+            if (getDistance(impactP as Vector, t.pos) < 60) {
+              const oldHp = t.hp; 
+              
+              // AUTHORITATIVE DAMAGE: Only the projectile owner (or host for AI/neutral) applies HP reduction
+              const isAttacker = pr.ownerId === myId || (isHostRef.current && (pr.ownerId === 'ai' || !pr.ownerId));
+              
+              if (isAttacker) {
+                  t.hp = Math.max(0, t.hp - 1); 
+                  createDust(t.pos.x, t.pos.y, t.color);
+                  console.log(`[TOWER HIT] Authoritative Tower ${t.id} HP: ${t.hp}/5`);
+                  
+                  // Sync hit to everyone else
+                  socketRef.current?.emit('building_hit', { 
+                      roomId: currentRoomRef.current?.id, 
+                      buildingId: t.id, 
+                      hp: t.hp 
+                  });
+                  
+                  if (t.hp <= 0 && oldHp > 0) {
+                      socketRef.current?.emit('building_destroyed', { 
+                          roomId: currentRoomRef.current?.id, 
+                          buildingId: t.id 
+                      });
+                  }
+              } else if (!isMultiplayer) {
+                  // Fallback for single player mode
+                  t.hp = Math.max(0, t.hp - 1);
+                  createDust(t.pos.x, t.pos.y, t.color);
+              }
+              // Note: Remote players in multiplayer will receive 'remote_building_hit' 
+              // and update their local t.hp accordingly, avoiding double subtraction.
             }
           });
           projectilesRef.current.splice(i, 1); continue;
@@ -3786,17 +4039,84 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         
         // ONLY THE OWNER (or host for AI/neutral towers) triggers the shooting event
         const isOwner = t.ownerId === myId || (socketRef.current?.id && t.ownerId === socketRef.current.id);
-        const shouldCalculate = isOwner || (!isMultiplayer && (t.ownerId === 'ai' || !t.ownerId)) || (isMultiplayer && isHost && (t.ownerId === 'ai' || !t.ownerId));
+        const shouldCalculate = isOwner || (!isMultiplayer && (t.ownerId === 'ai' || !t.ownerId)) || (isMultiplayer && isHostRef.current && (t.ownerId === 'ai' || !t.ownerId));
         if (!shouldCalculate) continue;
 
         if (t.type !== 'wall' && t.type !== 'gate' && Date.now() - t.lastShot > 1500) {
-          let nearestE: Unit | null = null, minD = 400;
-          entitiesRef.current.forEach(e => {
-            if (e.id === t.ownerId || e.faction === t.faction) return;
-            e.units.forEach(u => { const d = getDistance(t.pos, u.pos); if (d < minD) { minD = d; nearestE = u; } });
-          });
-          if (nearestE) {
-            t.lastShot = Date.now(); fireProjectile(t.ownerId, t.pos, nearestE.pos, t.color, t.empireId);
+          let nearestPos: Vector | null = null;
+          let minD = 400;
+          let currentTargetStillValid = false;
+
+          // Check if current target is still valid (in range and alive)
+          if (t.currentTargetId) {
+            // Check entities
+            const targetEnt = entitiesRef.current.find(e => e.id === t.currentTargetId);
+            if (targetEnt && targetEnt.units.length > 0) {
+              const d = getDistance(t.pos, targetEnt.units[0].pos);
+              if (d < 400) {
+                nearestPos = targetEnt.units[0].pos;
+                currentTargetStillValid = true;
+              }
+            }
+            
+            // Check garrisons if no entity found
+            if (!currentTargetStillValid) {
+              const targetG = garrisonsRef.current.find(g => g.id === t.currentTargetId);
+              if (targetG && targetG.units.length > 0) {
+                const d = getDistance(t.pos, targetG.pos);
+                if (d < 400) {
+                  nearestPos = targetG.pos;
+                  currentTargetStillValid = true;
+                }
+              }
+            }
+
+            // Check towers if no entity or garrison found
+            if (!currentTargetStillValid) {
+              const targetT = towersRef.current.find(tr => tr.id === t.currentTargetId);
+              if (targetT && targetT.hp > 0) {
+                const d = getDistance(t.pos, targetT.pos);
+                if (d < 400) {
+                  nearestPos = targetT.pos;
+                  currentTargetStillValid = true;
+                }
+              }
+            }
+          }
+
+          if (!currentTargetStillValid) {
+            t.currentTargetId = null;
+            // Find NEW target if current is invalid
+            // 1. Target Enemy Units
+            entitiesRef.current.forEach(e => {
+              if (e.id === t.ownerId || e.faction === t.faction) return;
+              e.units.forEach(u => { 
+                  const d = getDistance(t.pos, u.pos); 
+                  if (d < minD) { minD = d; nearestPos = u.pos; t.currentTargetId = e.id; } 
+              });
+            });
+
+            // 2. Target Enemy Garrisons
+            garrisonsRef.current.forEach(g => {
+              if (g.ownerId === t.ownerId || g.color === t.color) return;
+              const d = getDistance(t.pos, g.pos);
+              if (d < minD) { minD = d; nearestPos = g.pos; t.currentTargetId = g.id; }
+            });
+
+            // 3. Target Enemy Towers
+            towersRef.current.forEach(targetTower => {
+              if (t.id === targetTower.id) return;
+              if (targetTower.ownerId === t.ownerId || targetTower.color === t.color) return;
+              if (targetTower.type === 'wall' || targetTower.type === 'gate') return;
+              
+              const d = getDistance(t.pos, targetTower.pos);
+              if (d < minD) { minD = d; nearestPos = targetTower.pos; t.currentTargetId = targetTower.id; }
+            });
+          }
+
+          if (nearestPos) {
+            t.lastShot = Date.now(); 
+            fireProjectile(t.ownerId, t.pos, nearestPos, t.color, t.empireId);
           }
         }
       }
@@ -3808,21 +4128,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           if (t.ownerId === e.id || t.faction === e.faction) return;
           if (getDistance(e.units[0].pos, t.pos) < 60 && e.isAttacking && e.attackTimer < 250) {
             const oldHp = t.hp; t.hp = Math.max(0, t.hp - 1); createDust(t.pos.x, t.pos.y, t.color); e.hasHitInCurrentSwing = true;
-            if (t.hp <= 0 && oldHp > 0 && (e.id === myId || isHost)) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+            if (t.hp <= 0 && oldHp > 0 && (e.id === myId || isHostRef.current)) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
           }
         });
       });
-      garrisonsRef.current.forEach(g => {
-        if (g.units.length === 0) return;
-        towersRef.current.forEach(t => {
-          if (t.ownerId === g.ownerId || t.faction === g.color) return;
-          if (getDistance(g.pos, t.pos) < 80 && g.attackTimer > 0) {
-            const oldHp = t.hp; t.hp = Math.max(0, t.hp - 0.5); createDust(t.pos.x, t.pos.y, t.color);
-            if (t.hp <= 0 && oldHp > 0 && (g.ownerId === myId || isHost)) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
-          }
-        });
-      });
-
       // --- Village Capture & Income Logic ---
       if (frameCountRef.current % 10 === 0) {
         // Delayed village spawn logic (after 60 seconds)
@@ -3966,7 +4275,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 const d = head ? getDistance(c.pos, head.pos) : 9999;
                 
                 if (d > 250) { // ESCORT_RADIUS
-                    c.outOfCircleTime = (c.outOfCircleTime || 0) + 16.67; // approx dt
+                    c.outOfCircleTime = (c.outOfCircleTime || 0) + dt;
                     if (c.outOfCircleTime > 3000) {
                         console.log(`[CARAVAN] Contract Terminated: ${c.escortOwnerId} left the circle.`);
                         c.escortOwnerId = null;
@@ -3989,7 +4298,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         } else {
             // Clients: Smooth Interpolation
             if (c.lastSyncPos) {
-                const lerpFactor = 1 - Math.exp(-0.02 * 16.67);
+                const lerpFactor = 1 - Math.exp(-0.02 * dt);
                 c.pos.x += (c.lastSyncPos.x - c.pos.x) * lerpFactor;
                 c.pos.y += (c.lastSyncPos.y - c.pos.y) * lerpFactor;
             }
@@ -4197,6 +4506,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
     }
 
+    // Build fast lookup map for buildings (once per frame for rendering logic)
+    buildingMapRef.current.clear();
+    towersRef.current.forEach(t => {
+        const gx = Math.round(t.pos.x / GRID_SIZE);
+        const gy = Math.round(t.pos.y / GRID_SIZE);
+        buildingMapRef.current.set(`${gx}_${gy}`, t);
+    });
+
     // Particles update for everyone
     for (let i = particlesRef.current.length - 1; i >= 0; i--) {
       const pt = particlesRef.current[i]; pt.pos.x += pt.vel.x; pt.pos.y += pt.vel.y; pt.life -= 0.015;
@@ -4243,6 +4560,39 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             saveFinalStats(true);
             setIsSpectator(true);
         }
+    }
+
+    // LOCAL DEATH DETECTION (Robust server synchronization)
+    if (ENGINE_STATE === 'GAME_ACTIVE' && !isSpectatorRef.current && p && p.units.length === 0) {
+        console.log("[LOCAL DEBUG] Player has 0 units. Triggering death UI and informing server.");
+        
+        socketRef.current?.emit('commander_death_detected', { 
+            roomId: currentRoomRef.current?.id, 
+            winnerId: null, 
+            loserId: myId 
+        });
+
+        setMatchResult({ isWinner: false, winnerName: 'Enemy Commander' });
+        
+        const endTime = Date.now();
+        endTimeRef.current = endTime;
+        const start = startTimeRef.current || (endTime - 1000);
+        const durationSecs = Math.floor((endTime - start) / 1000);
+        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
+        const secs = (durationSecs % 60).toString().padStart(2, '0');
+        
+        setMatchStats({
+          duration: `${mins}:${secs}`,
+          maxArmy: maxArmyRef.current,
+          towersBuilt: towersBuiltRef.current,
+          kills: killsRef.current
+        });
+        
+        ENGINE_STATE = 'MATCH_RESULTS';
+        setGameState('MATCH_RESULTS');
+        gameStateRef.current = 'MATCH_RESULTS';
+        saveFinalStats(false);
+        setIsSpectator(true);
     }
 
     // Network Sync (33Hz for better combat accuracy)
@@ -4402,60 +4752,115 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
 
         if (t.type === 'wall') {
+            const gx = Math.round(t.pos.x / GRID_SIZE);
+            const gy = Math.round(t.pos.y / GRID_SIZE);
+            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
+            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
+            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
+            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
+
             if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
+
+            const isH = (t.rotation || 0) === 0;
+            const hasPrev = isH ? (n_l && (n_l.type==='wall' || n_l.type==='gate')) : (n_t && (n_t.type==='wall' || n_t.type==='gate'));
+            const hasNext = isH ? (n_r && (n_r.type==='wall' || n_r.type==='gate')) : (n_b && (n_b.type==='wall' || n_b.type==='gate'));
+
+            // Exact boundaries: 35 is grid edge, 55 is overlap into neighbor
+            const drawStart = hasPrev ? -55 : -35;
+            const drawEnd = hasNext ? 55 : 35;
+            const drawLen = drawEnd - drawStart;
 
             if (renderEmpireId === 'rim') {
               // --- Russian Palisade (Засека) ---
-              // Heavy Log Base
               ctx.fillStyle = '#4e342e';
-              ctx.fillRect(-DRAW_LENGTH/2, -15, DRAW_LENGTH, 30);
-              // Sharpened log tops (with varying heights for natural look)
+              ctx.fillRect(drawStart, -15, drawLen, 30);
+              
+              // Log Pattern
               ctx.fillStyle = '#5d4037';
-              for(let i=-4; i<=4; i++) {
+              const logWidth = 10;
+              const startLog = Math.floor(drawStart / logWidth);
+              const endLog = Math.ceil(drawEnd / logWidth);
+              for(let i = startLog; i < endLog; i++) {
+                const x = i * logWidth;
                 const h = 20 + Math.sin(i * 1.5) * 5;
                 ctx.beginPath();
-                ctx.moveTo(i*9 - 4.5, -15);
-                ctx.lineTo(i*9, -15 - h);
-                ctx.lineTo(i*9 + 4.5, -15);
+                ctx.moveTo(x + 1, -15);
+                ctx.lineTo(x + 5, -15 - h);
+                ctx.lineTo(x + 9, -15);
                 ctx.fill();
               }
               // Iron Reinforcement Bands
               ctx.fillStyle = '#334155';
-              ctx.fillRect(-DRAW_LENGTH/2, -5, DRAW_LENGTH, 4);
-              ctx.fillRect(-DRAW_LENGTH/2, 10, DRAW_LENGTH, 4);
+              ctx.fillRect(drawStart, -5, drawLen, 4);
+              ctx.fillRect(drawStart, 10, drawLen, 4);
             } else if (renderEmpireId === 'fim') {
               // --- French Bastion Wall (Stone & Iron) ---
-              // Polished Stone Base
               ctx.fillStyle = '#cbd5e1';
-              ctx.fillRect(-DRAW_LENGTH/2, -18, DRAW_LENGTH, 36);
-              // Marble Texture / Bricks
+              ctx.fillRect(drawStart, -18, drawLen, 36);
+              // Stone texture (repeating every 14px)
               ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
-              for(let i=-3; i<=3; i++) {
-                ctx.beginPath(); ctx.moveTo(i*12, -18); ctx.lineTo(i*12, 18); ctx.stroke();
+              const step = 14;
+              const sIdx = Math.floor(drawStart / step);
+              const eIdx = Math.ceil(drawEnd / step);
+              for(let i = sIdx; i <= eIdx; i++) {
+                ctx.beginPath(); ctx.moveTo(i*step, -18); ctx.lineTo(i*step, 18); ctx.stroke();
               }
-              ctx.beginPath(); ctx.moveTo(-DRAW_LENGTH/2, 0); ctx.lineTo(DRAW_LENGTH/2, 0); ctx.stroke();
+              ctx.beginPath(); ctx.moveTo(drawStart, 0); ctx.lineTo(drawEnd, 0); ctx.stroke();
               // Golden Top Railing
               ctx.fillStyle = '#fbbf24';
-              ctx.fillRect(-DRAW_LENGTH/2, -22, DRAW_LENGTH, 4);
+              ctx.fillRect(drawStart, -22, drawLen, 4);
             } else {
               // --- Ottoman Sandstone Wall ---
               ctx.fillStyle = '#d4a373';
-              ctx.fillRect(-DRAW_LENGTH/2, -15, DRAW_LENGTH, 35);
-              // Islamic Geometric Pattern (Simple)
+              ctx.fillRect(drawStart, -15, drawLen, 35);
+              // Islamic Geometric Pattern
               ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1.5;
-              for(let i=-3; i<=3; i++) {
-                ctx.save(); ctx.translate(i*12, 5); ctx.rotate(Math.PI/4); ctx.strokeRect(-4, -4, 8, 8); ctx.restore();
+              const step = 15;
+              const sIdx = Math.floor(drawStart / step);
+              const eIdx = Math.ceil(drawEnd / step);
+              for(let i = sIdx; i <= eIdx; i++) {
+                ctx.save(); ctx.translate(i*step, 5); ctx.rotate(Math.PI/4); ctx.strokeRect(-4, -4, 8, 8); ctx.restore();
               }
-              // Battlements with Crescent carvings
+              // Battlements
               ctx.fillStyle = '#bc8a5f';
-              for(let i=-2; i<=2; i++) {
-                ctx.fillRect(i*16 - 6, -25, 12, 10);
+              const bStep = 20;
+              const bsIdx = Math.floor(drawStart / bStep);
+              const beIdx = Math.ceil(drawEnd / bStep);
+              for(let i = bsIdx; i < beIdx; i++) {
+                ctx.fillRect(i*bStep + 3, -25, 14, 10);
               }
             }
             
-            // Faction Accent
+            // Faction Accent (Always centered)
             ctx.fillStyle = t.color;
             ctx.fillRect(-10, 5, 20, 5);
+
+            // DRAW JOINTS FOR PERPENDICULAR CORNERS (Bridge the 20px gap)
+            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Back to world space
+            const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
+            const thickness = renderEmpireId === 'fim' ? 36 : 30;
+            const halfThick = thickness / 2;
+
+            if (isH) {
+              if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, -35, thickness, 20); // Bridge Up (15 to 35)
+              }
+              if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, 15, thickness, 20); // Bridge Down (15 to 35)
+              }
+            } else {
+              if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-35, -halfThick, 20, thickness); // Bridge Left
+              }
+              if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(15, -halfThick, 20, thickness); // Bridge Right
+              }
+            }
+            ctx.rotate((t.rotation || 0) * Math.PI / 180); // Restore rotation for HUD
 
             // Health Bar (Wall) - Fixed clamping and added Shield Icon
             ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate for HUD
@@ -4489,23 +4894,66 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               ctx.beginPath(); ctx.moveTo(10, 5); ctx.lineTo(20, -10); ctx.stroke();
             }
           } else if (t.type === 'gate') {
+            const gx = Math.round(t.pos.x / GRID_SIZE);
+            const gy = Math.round(t.pos.y / GRID_SIZE);
+            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
+            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
+            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
+            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
+
             if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
             
             if (renderEmpireId === 'rim') {
-              // --- Russian Log Gate (Ворота) ---
-              // Massive Wooden Frame
+              // --- Russian Log Gate (Теремные Ворота) ---
+              // Massive Side Pillars (Logs)
               ctx.fillStyle = '#3e2723';
-              ctx.fillRect(-DRAW_LENGTH/2, -22, DRAW_LENGTH, 44);
+              ctx.fillRect(-35, -25, 12, 50); // Left log
+              ctx.fillRect(23, -25, 12, 50);  // Right log
               
+              // Roof (Upper beam)
+              ctx.fillStyle = '#2b1d1a';
+              ctx.beginPath();
+              ctx.moveTo(-38, -25); ctx.lineTo(0, -40); ctx.lineTo(38, -25); ctx.lineTo(38, -18); ctx.lineTo(-38, -18);
+              ctx.fill();
+
               if (!t.isOpen) {
-                // Vertical logs for the door
+                // Main Door Panel
                 ctx.fillStyle = '#4e342e';
-                ctx.fillRect(-(DRAW_LENGTH-12)/2, -18, DRAW_LENGTH-12, 36);
+                ctx.fillRect(-23, -22, 46, 44);
+                
+                // Vertical Log Texture on door
+                ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1;
+                for(let i=-2; i<=2; i++) {
+                  ctx.beginPath(); ctx.moveTo(i*9, -22); ctx.lineTo(i*9, 22); ctx.stroke();
+                }
+
+                // Iron Forged Elements (Decorative Crossbars)
+                ctx.fillStyle = '#1e293b';
+                ctx.fillRect(-23, -10, 46, 3);
+                ctx.fillRect(-23, 10, 46, 3);
+                
+                // Iron Bolts (Rivets)
+                ctx.fillStyle = '#334155';
+                for(let i=-2; i<=2; i++) {
+                  ctx.beginPath(); ctx.arc(i*15, -10, 2, 0, Math.PI*2); ctx.fill();
+                  ctx.beginPath(); ctx.arc(i*15, 10, 2, 0, Math.PI*2); ctx.fill();
+                }
+
+                // Golden Ring Handles
+                ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(-8, 5, 5, 0, Math.PI*2); ctx.stroke();
+                ctx.beginPath(); ctx.arc(8, 5, 5, 0, Math.PI*2); ctx.stroke();
               } else {
+                // OPENED: Show hollow passage with depth
                 ctx.save();
                 ctx.globalCompositeOperation = 'destination-out';
-                ctx.fillRect(-(DRAW_LENGTH-16)/2, -18, DRAW_LENGTH-16, 36);
+                ctx.fillRect(-21, -22, 42, 44);
                 ctx.restore();
+                
+                // Draw inner frame shadows
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                ctx.fillRect(-23, -22, 2, 44);
+                ctx.fillRect(21, -22, 2, 44);
               }
             } else if (renderEmpireId === 'fim') {
               // --- French Iron Gate (Портал) ---
@@ -4552,6 +5000,44 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 ctx.restore();
               }
             }
+            
+            // DRAW JOINTS FOR GATES TOO (Perfect tile joints)
+            ctx.rotate(-(t.rotation || 0) * Math.PI / 180);
+            const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
+            const jSize = renderEmpireId === 'fim' ? 36 : 30;
+            const halfWall = DRAW_LENGTH / 2;
+            const halfThick = jSize / 2;
+            const offset = GRID_SIZE / 2;
+
+            if (t.rotation === 0) {
+              if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, -offset - halfThick, jSize, jSize);
+              }
+              if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, offset - halfThick, jSize, jSize);
+              }
+              // Clean L-junction overlaps for gates
+              if (!n_l && (n_t || n_b)) {
+                 ctx.fillStyle = jointColor;
+                 ctx.fillRect(-halfWall, -halfThick, halfWall - halfThick, jSize);
+              }
+              if (!n_r && (n_t || n_b)) {
+                 ctx.fillStyle = jointColor;
+                 ctx.fillRect(halfThick, -halfThick, halfWall - halfThick, jSize);
+              }
+            } else {
+              if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-offset - halfThick, -halfThick, jSize, jSize);
+              }
+              if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(offset - halfThick, -halfThick, jSize, jSize);
+              }
+            }
+            ctx.rotate((t.rotation || 0) * Math.PI / 180);
             
             // Faction Banner on top
             ctx.fillStyle = t.color;
@@ -5358,16 +5844,35 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       if (isPlacingWall || isPlacingGate || isPlacingTower) {
         const cv = canvasRef.current;
         if (!cv) return;
-        const snapX = Math.floor(mouseWorldPosRef.current.x / GRID_SIZE) * GRID_SIZE;
-        const snapY = Math.floor(mouseWorldPosRef.current.y / GRID_SIZE) * GRID_SIZE;
+        
+        let targetX = mouseWorldPosRef.current.x;
+        let targetY = mouseWorldPosRef.current.y;
+
+        // Axis locking for preview
+        if (isMouseDownRef.current && (isPlacingWall || isPlacingGate) && placementStartPosRef.current && placementAxisRef.current) {
+            if (placementAxisRef.current === 'x') {
+                targetY = placementStartPosRef.current.y;
+            } else if (placementAxisRef.current === 'y') {
+                targetX = placementStartPosRef.current.x;
+            }
+        }
+
+        const snapX = Math.floor(targetX / GRID_SIZE) * GRID_SIZE;
+        const snapY = Math.floor(targetY / GRID_SIZE) * GRID_SIZE;
         const finalX = snapX + GRID_SIZE/2;
         const finalY = snapY + GRID_SIZE/2;
 
         let rotation = 0;
-        if ((isPlacingWall || isPlacingGate) && lastWallPosRef.current) {
-          const dx = Math.abs(finalX - lastWallPosRef.current.x);
-          const dy = Math.abs(finalY - lastWallPosRef.current.y);
-          if (dy > dx) rotation = 90;
+        if (isPlacingWall || isPlacingGate) {
+          if (placementAxisRef.current === 'x') {
+            rotation = 0;
+          } else if (placementAxisRef.current === 'y') {
+            rotation = 90;
+          } else if (lastWallPosRef.current) {
+            const dx = Math.abs(finalX - lastWallPosRef.current.x);
+            const dy = Math.abs(finalY - lastWallPosRef.current.y);
+            if (dy > dx) rotation = 90;
+          }
         }
         
         ctx.save();
@@ -5486,6 +5991,56 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         onTouchStart={handleCanvasClick}
       />
       
+      {/* Password Modal */}
+      {passwordModalRoom && (
+        <div className='absolute inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-6 z-[200] animate-in fade-in duration-300'>
+          <div className='bg-slate-900 border border-white/10 rounded-[2.5rem] p-8 md:p-12 w-full max-w-md shadow-2xl animate-in zoom-in-95 duration-300'>
+            <div className='flex items-center gap-4 mb-8'>
+              <div className='w-12 h-12 rounded-2xl bg-amber-500/20 flex items-center justify-center text-amber-500'>
+                <Shield size={24} />
+              </div>
+              <div>
+                <h2 className='text-2xl font-black text-white uppercase tracking-tighter'>{t.passwordRequired || 'Enter Password'}</h2>
+                <p className='text-slate-500 font-bold text-xs uppercase tracking-widest'>{passwordModalRoom.name}</p>
+              </div>
+            </div>
+
+            <div className='space-y-6'>
+              <div>
+                <label className='text-[10px] text-slate-500 font-black uppercase tracking-widest block mb-2'>{t.roomPassword || 'Password'}</label>
+                <input 
+                  type='password' 
+                  autoFocus
+                  value={passwordInput} 
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') submitJoinRequest(passwordModalRoom.id, passwordInput);
+                    if (e.key === 'Escape') setPasswordModalRoom(null);
+                  }}
+                  className='w-full bg-slate-850 border border-white/5 rounded-2xl px-6 py-4 text-white font-bold focus:outline-none focus:border-indigo-500/50 transition-all placeholder:text-slate-700'
+                  placeholder='••••••'
+                />
+              </div>
+
+              <div className='flex flex-col gap-3'>
+                <button 
+                  onClick={() => submitJoinRequest(passwordModalRoom.id, passwordInput)} 
+                  className='w-full py-5 bg-indigo-600 rounded-2xl font-black text-lg hover:bg-indigo-500 transition-all active:scale-95 shadow-lg shadow-indigo-500/20'
+                >
+                  {t.joinRoom || 'Join Battle'}
+                </button>
+                <button 
+                  onClick={() => setPasswordModalRoom(null)} 
+                  className='w-full py-3 text-slate-500 font-bold hover:text-white transition-all text-xs uppercase tracking-widest'
+                >
+                  {t.cancel}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {gameState === 'CONNECTING' && (
         <div className='absolute inset-0 bg-slate-900/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 z-[110]'>
           <div className='w-24 h-24 border-8 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mb-8'></div>
@@ -5540,7 +6095,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     />
                   </div>
                   <h1 className='text-4xl sm:text-6xl md:text-8xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400 uppercase tracking-tighter'>
-                     Yanichar Wars
+                     Empires.io
                    </h1>
                 </div>
                 <p className='text-slate-400 font-bold uppercase tracking-[0.2em] md:tracking-[0.3em] text-[10px] md:text-xs px-4'>
@@ -5673,15 +6228,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           <div className='w-full bg-slate-900/60 backdrop-blur-md border-b border-white/10 p-2 md:p-4 pointer-events-auto'>
             <div className='max-w-7xl mx-auto flex justify-between items-center gap-2'>
               <div className='flex items-center gap-2 md:gap-4'>
-                <button 
-                  onClick={() => {
-                    setShowExitConfirm(true);
-                  }}
-                  className='flex items-center justify-center w-8 h-8 md:w-10 md:h-10 rounded-full bg-slate-800 hover:bg-red-500/20 border border-white/10 transition-all group'
-                  title={t.exitToLobby}
-                >
-                  <LogOut size={16} className='text-slate-400 group-hover:text-red-400' />
-                </button>
                 <div className='flex flex-col md:mr-8 flex-shrink-0'>
                   <h2 className='text-sm md:text-xl font-black text-white uppercase tracking-tighter'>{t.waitingArena}</h2>
                   <p className='text-indigo-400 font-bold uppercase tracking-widest text-[6px] md:text-[8px] truncate max-w-[80px] md:max-w-none'>{currentRoom?.name || t.gameTitle}</p>
@@ -5692,7 +6238,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 {(lobbyPlayers || []).map((p) => (
                   <div key={p.id} className='bg-slate-800/80 backdrop-blur border border-white/10 rounded-lg md:rounded-xl px-2 py-1 md:px-3 md:py-1.5 flex items-center gap-1.5 md:gap-2 min-w-[80px] md:min-w-[110px] max-h-[32px] md:max-h-[44px] transition-all hover:bg-slate-700 relative group'>
                     <div className={`w-5 h-5 md:w-7 md:h-7 rounded-md md:rounded-lg flex items-center justify-center relative ${p.isHost ? 'bg-yellow-500/20 text-yellow-500' : 'bg-indigo-500/20 text-indigo-400'}`}>
-                      {p.isHost && <Crown className='absolute -top-1.5 -right-1.5 text-yellow-500 animate-pulse' size={8} className="md:w-2.5 md:h-2.5" />}
+                      {p.isHost && <Crown className='absolute -top-1.5 -right-1.5 text-yellow-500 animate-pulse md:w-2.5 md:h-2.5' size={8} />}
                       <Users size={10} className="md:w-3.5 md:h-3.5" />
                     </div>
                     <div className='flex flex-col overflow-hidden'>
@@ -5861,7 +6407,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     ) : (
                       <div className="flex flex-col gap-0.5">
                         <span className="text-red-400 font-bold">{t.youLost}</span>
-                        <span className="text-red-500/80 text-[8px] md:text-[9px]">{t.killedBy}: {matchResult?.winnerName || 'Unknown Commander'}</span>
+                        <span className="text-red-500 font-black uppercase tracking-tighter text-[10px] md:text-xs mt-1 bg-red-600/20 py-1 px-3 rounded-full border border-red-500/20 inline-block mx-auto">
+                          {t.wasKilledBy || 'Вас убил'}: <span className="text-white">"{matchResult?.winnerName || killerName || 'Unknown Commander'}"</span>
+                        </span>
                       </div>
                     )}
                   </div>
@@ -5934,7 +6482,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 <span className='text-[7px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none mb-0.5'>{t.treasury || 'Treasury'}</span>
                 <div className='flex items-baseline gap-1'>
                   <span className='text-lg md:text-3xl font-black text-white tabular-nums tracking-tighter'>{playerAkce}</span>
-                  <span className='text-[7px] md:text-[10px] font-bold text-amber-500/80 uppercase tracking-tighter'>Akçe</span>
+                  <span className='text-[7px] md:text-[10px] font-bold text-amber-500/80 uppercase tracking-tighter'>{getEmpireCurrency()}</span>
                 </div>
               </div>
             </div>
@@ -6147,10 +6695,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     setIsPlacingTower(false);
                     lastWallPosRef.current = null; 
                   }}
-                  className='w-16 h-16 md:w-20 md:h-20 bg-red-600 hover:bg-red-500 text-white rounded-full shadow-xl flex flex-col items-center justify-center border-2 md:border-4 border-white/20 transition-all active:scale-90 animate-in zoom-in duration-200'
+                  className='relative w-16 h-16 md:w-20 md:h-20 bg-red-600 hover:bg-red-500 text-white rounded-full shadow-xl flex flex-col items-center justify-center border-2 md:border-4 border-white/20 transition-all active:scale-90 animate-in zoom-in duration-200'
                 >
                   <span className="text-xl md:text-2xl font-black">✕</span>
                   <span className="text-[7px] md:text-[8px] font-black uppercase">{t.cancel}</span>
+                  <div className='absolute -top-2 -right-2 bg-slate-950 border border-white/20 rounded-md px-1.5 py-0.5 text-[8px] font-black text-white'>ESC</div>
                 </button>
               )}
               <button onClick={() => { if (playerRef.current) splitSwarm(playerRef.current); }} className='relative w-16 h-16 md:w-20 md:h-20 rounded-full border-2 md:border-4 flex flex-col items-center justify-center transition-all bg-indigo-600/20 border-indigo-500/30 active:scale-90 shadow-xl'>
@@ -6231,7 +6780,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                             </div>
                           </div>
                           <div className='flex items-center gap-1 bg-slate-950 px-1.5 py-0.5 md:px-2 md:py-1 rounded-lg font-black text-amber-500 border border-amber-500/20 text-[10px] md:text-xs'>
-                            {UNIT_PRICES.infantry * count} <span className='text-[5px] md:text-[7px]'>AKÇE</span>
+                            {UNIT_PRICES.infantry * count} <span className='text-[5px] md:text-[7px]'>{getEmpireCurrency().toUpperCase()}</span>
                           </div>
                         </button>
                       ))}
@@ -6241,21 +6790,36 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   <div className='space-y-2 md:space-y-3'>
                     <p className='text-[8px] md:text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] px-2'>{t.construction}</p>
                     <div className='grid grid-cols-1 gap-2'>
-                      <button onClick={() => { setIsPlacingTower(true); setShowShop(false); }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-emerald-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
+                      <button onClick={() => { 
+                        setIsPlacingTower(true); 
+                        setIsPlacingWall(false); 
+                        setIsPlacingGate(false); 
+                        setShowShop(false); 
+                      }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-emerald-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
                         <div className='flex items-center gap-3 md:gap-4'>
                           <div className='w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform'><Shield size={20} className="md:w-6 md:h-6" /></div>
                           <div className='text-left'><div className='text-xs md:text-base font-bold uppercase'>{t.buildTower}</div><div className='text-[8px] md:text-[10px] text-slate-500 font-bold uppercase'>{t.defensive}</div></div>
                         </div>
                         <div className='flex items-center gap-1.5 bg-slate-950 px-2 py-1 md:px-3 md:py-1.5 rounded-lg md:rounded-xl font-black text-amber-500 border border-amber-500/20 text-[10px] md:text-base'>{UNIT_PRICES.tower} <span className='text-[6px] md:text-[8px]'>AKÇE</span></div>
                       </button>
-                      <button onClick={() => { setIsPlacingWall(true); setShowShop(false); }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-emerald-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
+                      <button onClick={() => { 
+                        setIsPlacingWall(true); 
+                        setIsPlacingTower(false); 
+                        setIsPlacingGate(false); 
+                        setShowShop(false); 
+                      }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-emerald-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
                         <div className='flex items-center gap-3 md:gap-4'>
                           <div className='w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform'><Shield size={20} className="md:w-6 md:h-6" /></div>
                           <div className='text-left'><div className='text-xs md:text-base font-bold uppercase'>{t.buildWall}</div><div className='text-[8px] md:text-[10px] text-slate-500 font-bold uppercase'>{t.obstacle}</div></div>
                         </div>
                         <div className='flex items-center gap-1.5 bg-slate-950 px-2 py-1 md:px-3 md:py-1.5 rounded-lg md:rounded-xl font-black text-amber-500 border border-amber-500/20 text-[10px] md:text-base'>{UNIT_PRICES.wall} <span className='text-[6px] md:text-[8px]'>AKÇE</span></div>
                       </button>
-                      <button onClick={() => { setIsPlacingGate(true); setShowShop(false); }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-emerald-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
+                      <button onClick={() => { 
+                        setIsPlacingGate(true); 
+                        setIsPlacingWall(false); 
+                        setIsPlacingTower(false); 
+                        setShowShop(false); 
+                      }} className='w-full flex items-center justify-between bg-slate-800/50 hover:bg-emerald-600/20 p-3 md:p-4 rounded-xl md:rounded-2xl border border-white/5 transition-all group'>
                         <div className='flex items-center gap-3 md:gap-4'>
                           <div className='w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform'><Shield size={20} className="md:w-6 md:h-6" /></div>
                           <div className='text-left'><div className='text-xs md:text-base font-bold uppercase'>{t.buildGate}</div><div className='text-[8px] md:text-[10px] text-slate-500 font-bold uppercase'>{t.passableBarrier}</div></div>
@@ -6284,7 +6848,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           <div className='text-slate-400 text-xs md:text-xl font-bold'>→</div>
                           <div className='flex flex-col items-end'>
                             <div className='text-sm md:text-lg font-black text-amber-500'>+{count * 5}</div>
-                            <span className='text-[6px] md:text-[10px] text-amber-500/60 font-bold uppercase'>Akçe</span>
+                            <span className='text-[6px] md:text-[10px] text-amber-500/60 font-bold uppercase'>{getEmpireCurrency()}</span>
                           </div>
                         </button>
                       ))}
@@ -6303,7 +6867,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         </div>
                         <div className='flex flex-col items-end'>
                           <div className='text-sm md:text-xl font-black text-amber-500'>MAX</div>
-                          <span className='text-[8px] md:text-xs text-amber-500/60 font-bold uppercase'>Akçe</span>
+                          <span className='text-[8px] md:text-xs text-amber-500/60 font-bold uppercase'>{getEmpireCurrency()}</span>
                         </div>
                       </button>
                     </div>

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import SwarmEngine from './components/SwarmEngine';
 import SelectionScreen, { EmpireType } from './components/SelectionScreen';
 import IntroScreen from './components/IntroScreen';
+import ErrorBoundary from './components/ErrorBoundary';
 import { Language } from './utils/i18n';
 
 function App() {
@@ -44,11 +45,13 @@ function App() {
           language={language}
         />
       ) : (
-        <SwarmEngine 
-          initialEmpire={selectedEmpire} 
-          onBack={() => setSelectedEmpire(null)}
-          language={language}
-        />
+        <ErrorBoundary>
+          <SwarmEngine 
+            initialEmpire={selectedEmpire} 
+            onBack={() => setSelectedEmpire(null)}
+            language={language}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

@@ -1,7 +1,15 @@
 export type Language = 'en' | 'ru' | 'tr';
 
+export const EMPIRE_CURRENCIES: Record<string, string> = {
+  rim: "Rubles",
+  fim: "Livres",
+  tim: "Akce"
+};
+
 export const translations = {
   en: {
+    // Slogans
+    slogan: "IMPERATOR'S EDITION • ONLINE BATTLE ROYALE",
     // Titles by Empire
     titles: {
       rim: { nickname: "Voevoda Nickname", plural: "Voevodas", victory: "GREAT VOEVODA IS VICTORIOUS", waiting: "WAITING FOR VOEVODA..." },
@@ -9,7 +17,7 @@ export const translations = {
       tim: { nickname: "Bey Nickname", plural: "Beys", victory: "GREAT BEY IS VICTORIOUS", waiting: "WAITING FOR BEY..." }
     },
     // Intro/Selection
-    gameTitle: "Yanichar Wars",
+    gameTitle: "Empires.io",
     enterBattle: "Enter Battle",
     selectEmpire: "Select Your Empire",
     russianEmpire: "Russian Empire",
@@ -106,7 +114,8 @@ export const translations = {
     left: "Left",
     assignObjective: "Assign the objective",
     victoryMessage: "You conquered the field.",
-    treasuryDesc: "Sell your units to fill the treasury with Akçe.",
+    wasKilledBy: "Was killed by",
+    treasuryDesc: "Sell your units to fill the treasury.",
     squadSeparated: "SQUAD SEPARATED",
     defendTerrain: "Defend Terrain",
     seekHostiles: "Seek Hostiles",
@@ -144,6 +153,8 @@ export const translations = {
     returnToCircle: "RETURN TO CIRCLE!"
   },
   ru: {
+    // Slogans
+    slogan: "ИМПЕРСКОЕ ИЗДАНИЕ • ОНЛАЙН БИТВА КОРОЛЕЙ",
     // Titles by Empire
     titles: {
       rim: { nickname: "Никнейм Воеводы", plural: "Воеводы", victory: "ВЕЛИКИЙ ВОЕВОДА ПОБЕДИЛ", waiting: "ОЖИДАНИЕ ВОЕВОДЫ..." },
@@ -151,7 +162,7 @@ export const translations = {
       tim: { nickname: "Никнейм Бея", plural: "Беи", victory: "ВЕЛИКИЙ БЕЙ ПОБЕДИЛ", waiting: "ОЖИДАНИЕ БЕЯ..." }
     },
     // Intro/Selection
-    gameTitle: "Янычарские Войны",
+    gameTitle: "Empires.io",
     enterBattle: "В бой",
     selectEmpire: "Выберите Империю",
     russianEmpire: "Российская Империя",
@@ -248,7 +259,8 @@ export const translations = {
     left: "осталось",
     assignObjective: "Назначьте задачу",
     victoryMessage: "Вы захватили поле боя.",
-    treasuryDesc: "Продавайте своих воинов, чтобы пополнить казну Акче.",
+    wasKilledBy: "Вас убил",
+    treasuryDesc: "Продавайте своих воинов, чтобы пополнить казну.",
     squadSeparated: "ОТРЯД ОТДЕЛЕН",
     defendTerrain: "Защита территории",
     seekHostiles: "Поиск противника",
@@ -286,6 +298,8 @@ export const translations = {
     returnToCircle: "ВЕРНИТЕСЬ В КРУГ!"
   },
   tr: {
+    // Slogans
+    slogan: "IMPERATOR VERSİYONU • ONLİNE BATTLE ROYALE",
     // Titles by Empire
     titles: {
       rim: { nickname: "Voyvoda Takma Adı", plural: "Voyvodalar", victory: "BÜYÜK VOYVODA KAZANDI", waiting: "VOYVODA BEKLENİYOR..." },
@@ -293,7 +307,7 @@ export const translations = {
       tim: { nickname: "Bey Takma Adı", plural: "Beyler", victory: "BÜYÜK BEY KAZANDI", waiting: "BEY BEKLENİYOR..." }
     },
     // Intro/Selection
-    gameTitle: "Yeniçeri Savaşları",
+    gameTitle: "Empires.io",
     enterBattle: "Savaşa Gir",
     selectEmpire: "İmparatorluğunu Seç",
     russianEmpire: "Rus İmparatorluğu",
@@ -307,7 +321,7 @@ export const translations = {
     syncingWithServer: "Sultan'ın Sunucusuyla Senkronize Ediliyor...",
     networkDebugger: "Ağ Hata Ayıklayıcı",
     waitingForSultan: "Sultan Bekleniyor",
-    abortMission: "Görevi Иptal Et",
+    abortMission: "Görevi İptal Et",
     backToMenu: "Menüye Dön",
     online: "Çevrimiçi",
     serverFull: "Sunucu Dolu",
@@ -390,6 +404,7 @@ export const translations = {
     left: "Kaldı",
     assignObjective: "Görevi belirle",
     victoryMessage: "Alana hakim oldun.",
+    wasKilledBy: "Tarafından öldürüldü",
     treasuryDesc: "Hazineyi Akçe ile doldurmak için askerlerini sat.",
     squadSeparated: "BİRLİK AYRILDI",
     defendTerrain: "Bölgeyi Savun",
@@ -423,6 +438,8 @@ export const translations = {
     shiftDash: "Shift - Koş",
     escCancel: "Esc - İptal",
     sellWall: "Satmak için tıkla (5 Akçe)",
-    toggleGate: "Açmak/kapatmak için tıkla"
+    toggleGate: "Açmak/kapatmak için tıkla",
+    protecting: "KORUNUYOR",
+    returnToCircle: "DAİREYE DÖN!"
   }
 };

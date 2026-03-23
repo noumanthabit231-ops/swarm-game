@@ -49,12 +49,14 @@ const IntroScreen: React.FC<{ onFinish: () => void }> = ({ onFinish }) => {
 
       <div className="mt-8 md:mt-12 text-center animate-in fade-in zoom-in duration-1000 delay-500 px-4">
         <h1 className="text-4xl sm:text-6xl md:text-8xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400 uppercase tracking-tighter mb-2">
-          {t.gameTitle}
+          Empires.io
         </h1>
         <div className="flex items-center justify-center gap-2">
-          <div className="h-[1px] w-12 bg-slate-800" />
-          <p className="text-slate-500 font-bold uppercase tracking-[0.5em] text-[10px]">{lang === 'ru' ? 'Приготовьтесь к битве' : lang === 'tr' ? 'Savaşa Hazırlan' : 'Prepare for Battle'}</p>
-          <div className="h-[1px] w-12 bg-slate-800" />
+          <div className="h-[1px] w-8 md:w-12 bg-slate-800" />
+          <p className="text-slate-500 font-bold uppercase tracking-[0.3em] md:tracking-[0.5em] text-[8px] md:text-[10px] whitespace-nowrap">
+            {t.slogan}
+          </p>
+          <div className="h-[1px] w-8 md:w-12 bg-slate-800" />
         </div>
       </div>
 

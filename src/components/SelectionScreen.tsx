@@ -12,7 +12,6 @@ interface Empire {
   image: string;
   color: string;
   description: string;
-  features: string[];
 }
 
 const getEmpires = (lang: Language): Empire[] => [
@@ -24,10 +23,7 @@ const getEmpires = (lang: Language): Empire[] => [
     color: '#1e3a8a', // Dark Blue
     description: lang === 'ru' ? 'Могущественная северная держава с огромными ресурсами и стойким духом.' : 
                  lang === 'tr' ? 'Muazzam kaynaklara ve sarsılmaz bir ruha sahip güçlü bir kuzey gücü.' :
-                 'A powerful northern power with vast resources and an indomitable spirit.',
-    features: lang === 'ru' ? ['Стойкость юнитов', 'Сильная пехота', 'Защитные бонусы'] :
-              lang === 'tr' ? ['Birim Dayanıklılığı', 'Güçlü Piyade', 'Savunma Bonusları'] :
-              ['Unit Resilience', 'Strong Infantry', 'Defensive Bonuses']
+                 'A powerful northern power with vast resources and an indomitable spirit.'
   },
   {
     id: 'tim',
@@ -36,11 +32,8 @@ const getEmpires = (lang: Language): Empire[] => [
     image: '/tim.jpg',
     color: '#991b1b', // Dark Red
     description: lang === 'ru' ? 'Великая империя, объединяющая восток и запад своей несокрушимой мощью.' :
-                 lang === 'tr' ? 'Doğu ve batıyı sarsılmaz gücüyle birleştiren büyük bir imparatorluk.' :
-                 'A great empire uniting east and west with its unbreakable power.',
-    features: lang === 'ru' ? ['Мощные янычары', 'Осадные технологии', 'Быстрое расширение'] :
-              lang === 'tr' ? ['Güçlü Yeniçeriler', 'Kuşatma Teknolojileri', 'Hızlı Genişleme'] :
-              ['Powerful Janissaries', 'Siege Technologies', 'Rapid Expansion']
+                 lang === 'tr' ? 'Doğu ve batıyı sarsılmaz gücüyle birleştiren большой imparatorluk.' :
+                 'A great empire uniting east and west with its unbreakable power.'
   },
   {
     id: 'fim',
@@ -50,10 +43,7 @@ const getEmpires = (lang: Language): Empire[] => [
     color: '#1e40af', // Blue
     description: lang === 'ru' ? 'Центр культуры и военной стратегии Европы под знаменем Наполеона.' :
                  lang === 'tr' ? 'Napolyon sancağı altında Avrupa\'nın kültür ve askeri strateji merkezi.' :
-                 'The center of European culture and military strategy under Napoleon\'s banner.',
-    features: lang === 'ru' ? ['Тактическая гибкость', 'Элитная гвардия', 'Боевой дух'] :
-              lang === 'tr' ? ['Taktiksel Esneklik', 'Elit Muhafızlar', 'Savaş Ruhu'] :
-              ['Tactical Flexibility', 'Elite Guard', 'Morale']
+                 'The center of European culture and military strategy under Napoleon\'s banner.'
   }
 ];
 
@@ -80,7 +70,7 @@ const SelectionScreen: React.FC<SelectionScreenProps> = ({ onSelect, language })
       <div className="w-full max-w-6xl animate-in fade-in zoom-in duration-700 py-12 md:py-0">
         <div className="text-center mb-8 md:mb-12">
           <h1 className="text-4xl sm:text-6xl md:text-8xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400 uppercase tracking-tighter mb-4 px-4">
-            {t.gameTitle}
+            Empires.io
           </h1>
           <p className="text-slate-400 font-bold uppercase tracking-[0.2em] md:tracking-[0.3em] text-[10px] md:text-sm px-4">
             {t.selectEmpire}
@@ -134,15 +124,6 @@ const SelectionScreen: React.FC<SelectionScreenProps> = ({ onSelect, language })
                   <p className="text-slate-400 text-[10px] md:text-sm mb-3 md:mb-6 leading-relaxed font-medium line-clamp-2 md:line-clamp-none">
                     {empire.description}
                   </p>
-
-                  <div className="w-full grid grid-cols-1 gap-1 md:gap-2 mt-auto">
-                    {empire.features.map((feature, i) => (
-                      <div key={i} className="flex items-center gap-1.5 md:gap-2 text-[9px] md:text-xs font-bold text-slate-300">
-                        <div className="w-1 md:w-1.5 h-1 md:h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: empire.color }} />
-                        <span className="truncate">{feature}</span>
-                      </div>
-                    ))}
-                  </div>
                 </div>
               </div>
             </div>
