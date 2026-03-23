@@ -216,7 +216,25 @@ class SocketProxy {
           enemy.targetAngle = rotation;
           enemy.lastUpdate = Date.now();
           if (enemy.units.length > 0) enemy.units[0].hp = hp;
+          
+          // HARD BINARY SYNC: FORCE unitCount and isAlive
           enemy.score = unitCount;
+          if (unitCount === 0) {
+            enemy.isAlive = false;
+            enemy.units = []; // Clear units immediately
+          } else {
+            enemy.isAlive = true;
+            // Ensure enemy has at least one unit if unitCount > 0 for rendering
+            if (enemy.units.length === 0) {
+               enemy.units.push({
+                 id: 'remote_head_' + enemy.id,
+                 pos: { x, y },
+                 hp: hp,
+                 maxHp: 100,
+                 type: 'soldier'
+               });
+            }
+          }
         }
         return;
       }
@@ -1096,34 +1114,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         remotePlayersRef.current.delete(data.loserId);
         entitiesRef.current = entitiesRef.current.filter(e => e.id !== data.loserId);
         
-        // CHECK: If we are the ONLY ONE left after this elimination, we WIN.
-        const alivePlayers = entitiesRef.current.filter(e => e.type === 'player' && e.units.length > 0);
-        const mySidVal = socketProxyRef.current?.id || myId;
-        const amIAlive = entitiesRef.current.find(e => e.id === mySidVal && e.units.length > 0);
-
-        if (alivePlayers.length === 1 && amIAlive && !isSpectatorRef.current) {
-            setMatchResult({ isWinner: true, winnerName: nickname || 'You' });
-            
-            const endTime = Date.now();
-            endTimeRef.current = endTime;
-            const start = startTimeRef.current || (endTime - 1000);
-            const durationSecs = Math.floor((endTime - start) / 1000);
-            const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-            const secs = (durationSecs % 60).toString().padStart(2, '0');
-            
-            setMatchStats({
-              duration: `${mins}:${secs}`,
-              maxArmy: maxArmyRef.current,
-              towersBuilt: towersBuiltRef.current,
-              kills: killsRef.current
-            });
-            
-            ENGINE_STATE = 'MATCH_RESULTS';
-            setGameState('MATCH_RESULTS');
-            gameStateRef.current = 'MATCH_RESULTS';
-            saveFinalStats(true);
-            setIsSpectator(true);
-        }
+        // REMOVED: Local win detection. Only server decides via game_over_final.
       }
     });
 
@@ -4200,24 +4191,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   createDust(impactP!.x, impactP!.y, e.color);
                   
-                  // SERVER SYNC: Inform the target player they took damage
+                  // SERVER SYNC: Inform the server about the hit (Server will arbitrate and broadcast)
                   if (pr.ownerId === myId) {
                       socketProxyRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: e.id, 
                           damage: aoeD,
                           unitIndex: ui,
-                          attackerId: pr.ownerId,
+                          attackerId: pr.ownerId === myId ? 'tower' : pr.ownerId, // Marker for tower arbitration
                           attackerName: nickname
-                      });
-                  }
-                  
-                  // SERVER SYNC: Any client that detects a commander death should report it.
-                  if (ui === 0 && e.units.length === 1) {
-                      socketProxyRef.current?.emit('commander_death_detected', { 
-                        roomId: currentRoomRef.current?.id, 
-                        winnerId: pr.ownerId === 'remote'?null:pr.ownerId, 
-                        loserId: e.id 
                       });
                   }
                 } else if (pr.ownerId === myId) {
@@ -4227,7 +4209,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                        targetPlayerId: e.id, 
                        damage: aoeD,
                        unitIndex: ui,
-                       attackerId: pr.ownerId,
+                       attackerId: pr.ownerId === myId ? 'tower' : pr.ownerId,
                        attackerName: nickname
                    });
                 }
@@ -4838,27 +4820,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             loserId: myId 
         });
 
-        setMatchResult({ isWinner: false, winnerName: 'Enemy Commander' });
-        
-        const endTime = Date.now();
-        endTimeRef.current = endTime;
-        const start = startTimeRef.current || (endTime - 1000);
-        const durationSecs = Math.floor((endTime - start) / 1000);
-        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-        const secs = (durationSecs % 60).toString().padStart(2, '0');
-        
-        setMatchStats({
-          duration: `${mins}:${secs}`,
-          maxArmy: maxArmyRef.current,
-          towersBuilt: towersBuiltRef.current,
-          kills: killsRef.current
-        });
-        
-        ENGINE_STATE = 'MATCH_RESULTS';
-        setGameState('MATCH_RESULTS');
-        gameStateRef.current = 'MATCH_RESULTS';
-        saveFinalStats(false);
+        // Set spectator mode immediately so we can keep watching the battle
         setIsSpectator(true);
+        isSpectatorRef.current = true;
+        
+        // Removed: ENGINE_STATE = 'MATCH_RESULTS'
+        // We wait for the server to send game_over_final to show the results screen
     }
 
     // Network Sync (33Hz for better combat accuracy)
