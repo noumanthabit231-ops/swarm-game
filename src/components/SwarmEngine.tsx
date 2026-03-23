@@ -3,7 +3,6 @@ import Joystick from './Joystick';
 import { Crown, Shield, Sword, Check, ArrowLeft, Users, Zap,
   WifiOff,
   RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
-import { io, Socket } from 'socket.io-client';
 import { cn } from '../utils/cn';
 
 import { EmpireType } from './SelectionScreen';
@@ -20,7 +19,7 @@ interface SwarmEngineProps {
   language: Language;
 }
 
-const SOCKET_URL = (import.meta as any).env?.VITE_SOCKET_URL || 'https://natural-prosperity-production.up.railway.app';
+const SOCKET_URL = 'wss://natural-prosperity-production.up.railway.app';
 
 const WORLD_SIZE = 4000;
 const LOBBY_WORLD_SIZE = 1200;
@@ -133,6 +132,7 @@ interface Garrison {
 
 interface Entity { 
   id: string; 
+  shortId?: number; // Для бинарной синхронизации
   name: string; 
   type: 'player' | 'ai'; 
   units: Unit[]; 
@@ -176,6 +176,106 @@ interface TunnelEntrance {
 interface Particle { pos: Vector; vel: Vector; life: number; maxLife: number; color: string; type?: 'dust' | 'slash' | 'tower_dust' | 'ripple' | 'text'; text?: string; }
 
 const getDistance = (v1: Vector, v2: Vector) => Math.sqrt((v1.x - v2.x) ** 2 + (v1.y - v2.y) ** 2);
+
+class SocketProxy {
+  ws: WebSocket;
+  id: string = '';
+  connected: boolean = false;
+  listeners: { [key: string]: Function[] } = {};
+  myShortIdRef: React.MutableRefObject<number | null>;
+  entitiesRef: React.MutableRefObject<Entity[]>;
+  setMyId: (id: string) => void;
+  setLastEvent: (event: string) => void;
+
+  constructor(url: string, myShortIdRef: React.MutableRefObject<number | null>, entitiesRef: React.MutableRefObject<Entity[]>, setMyId: (id: string) => void, setLastEvent: (event: string) => void) {
+    this.ws = new WebSocket(url);
+    this.ws.binaryType = 'arraybuffer';
+    this.myShortIdRef = myShortIdRef;
+    this.entitiesRef = entitiesRef;
+    this.setMyId = setMyId;
+    this.setLastEvent = setLastEvent;
+
+    this.ws.onopen = () => {
+      this.connected = true;
+      this.trigger('connect');
+    };
+
+    this.ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        const view = new DataView(event.data);
+        const shortId = view.getUint32(0, true);
+        const x = view.getFloat32(4, true);
+        const y = view.getFloat32(8, true);
+        const rotation = view.getFloat32(12, true);
+        const hp = view.getFloat32(16, true);
+        const unitCount = view.getUint32(20, true);
+
+        const enemy = this.entitiesRef.current.find(e => e.shortId === shortId);
+        if (enemy && enemy.id !== this.id) {
+          enemy.targetPos = { x, y };
+          enemy.targetAngle = rotation;
+          enemy.lastUpdate = Date.now();
+          if (enemy.units.length > 0) enemy.units[0].hp = hp;
+          enemy.score = unitCount;
+        }
+        return;
+      }
+
+      try {
+        const { type, data } = JSON.parse(event.data);
+        if (type === 'set_id') {
+          this.id = data;
+          this.setMyId(data);
+        }
+        this.trigger(type, data);
+        this.setLastEvent(type);
+      } catch (e) {
+        console.error("WS Parse error", e);
+      }
+    };
+
+    this.ws.onclose = () => {
+      this.connected = false;
+      this.trigger('disconnect');
+    };
+
+    this.ws.onerror = (err) => {
+      this.trigger('connect_error', err);
+    };
+  }
+
+  on(event: string, cb: Function) {
+    if (!this.listeners[event]) this.listeners[event] = [];
+    this.listeners[event].push(cb);
+  }
+
+  emit(type: string, data: any) {
+    if (this.ws.readyState === WebSocket.OPEN) {
+      if (type === 'sync_data' && data.x !== undefined && data.y !== undefined) {
+        const buffer = new ArrayBuffer(24);
+        const view = new DataView(buffer);
+        view.setUint32(0, this.myShortIdRef.current || 0, true);
+        view.setFloat32(4, data.x, true);
+        view.setFloat32(8, data.y, true);
+        view.setFloat32(12, data.rotation, true);
+        view.setFloat32(16, data.hp, true);
+        view.setUint32(20, data.unitCount, true);
+        this.ws.send(buffer);
+      } else {
+        this.ws.send(JSON.stringify({ type, data }));
+      }
+    }
+  }
+
+  trigger(event: string, data?: any) {
+    if (this.listeners[event]) {
+      this.listeners[event].forEach(cb => cb(data));
+    }
+  }
+
+  close() { this.ws.close(); }
+  disconnect() { this.ws.close(); }
+}
 const generateId = (prefix: string = 'wall') => prefix + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
 
 class SeededRandom {
@@ -471,6 +571,7 @@ interface Room {
 
 interface LobbyPlayer {
   id: string;
+  shortId?: number; // Короткий ID для бинарной синхронизации
   peerId: string;
   name: string;
   isReady: boolean;
@@ -604,12 +705,13 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
 
   // Networking State
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<SocketProxy | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
   const lastUIUpdateTimeRef = useRef<number>(0); // NEW: Throttle React state updates
   const [isHost, setIsHost] = useState(false);
   const isHostRef = useRef(false); // NEW: Reliable host ref
   const [myId, setMyId] = useState('');
+  const myShortIdRef = useRef<number | null>(null); // Короткий ID для бинарной синхронизации
   const myIdRef = useRef(''); // Ref for myId to avoid closure issues
   useEffect(() => { myIdRef.current = myId; }, [myId]); // Sync ref
   const [isMultiplayer, setIsMultiplayer] = useState(false);
@@ -694,6 +796,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       if (!remotePlayersRef.current.has(p.id)) {
         const newEnt: Entity = {
           id: p.id,
+          shortId: p.shortId, // Присваиваем короткий ID
           name: playerName,
           type: 'player',
           units: [{ pos: { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 }, color: factionColor, id: p.id + '_0', type: 'infantry', hp: 500 }],
@@ -725,15 +828,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   }, [myId]);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
+    const socket = new SocketProxy(SOCKET_URL, myShortIdRef, entitiesRef, setMyId, setLastEvent);
     socketRef.current = socket;
 
-    socket.onAny((eventName) => {
-      setLastEvent(eventName);
-    });
-
     socket.on('connect', () => {
-      setMyId(socket.id || '');
       setNetworkStatus('Ready');
       setSocketConnected(true);
       setLastEvent('Connected');
@@ -751,12 +849,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('room_list', (rooms: Room[]) => {
-      setLastEvent('room_list');
       setDiscoveredRooms(Array.isArray(rooms) ? rooms : []);
     });
 
     socket.on('update_rooms', (rooms: Room[]) => {
-      setLastEvent('update_rooms');
       setDiscoveredRooms(Array.isArray(rooms) ? rooms : []);
     });
 
@@ -777,10 +873,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setCurrentRoom(room);
       currentRoomRef.current = room; // Sync ref immediately
       (window as any).currentRoomId = room.id; // Global fallback
-      const hostFlag = room.hostId === socket.id;
+      const myIdVal = socket.id || myId;
+      const hostFlag = room.hostId === myIdVal;
       setIsHost(hostFlag);
       isHostRef.current = hostFlag;
       setIsMultiplayer(true);
+      
+      // Store local shortId
+      const me = room.players?.find(p => p.id === myIdVal);
+      if (me) myShortIdRef.current = me.shortId || null;
       
       // Forced cleanup before lobby starts
       entitiesRef.current = [];
@@ -804,9 +905,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setCurrentRoom(roomData);
       currentRoomRef.current = roomData; // Sync ref immediately
       (window as any).currentRoomId = roomData.id; // Global fallback
-      const hostFlag = roomData.hostId === socket.id;
+      const myIdVal = socket.id || myId;
+      const hostFlag = roomData.hostId === myIdVal;
       setIsHost(hostFlag);
       isHostRef.current = hostFlag;
+      
+      // Store local shortId
+      const me = roomData.players?.find(p => p.id === myIdVal);
+      if (me) myShortIdRef.current = me.shortId || null;
       
       // Forced cleanup before lobby starts
       entitiesRef.current = [];
@@ -1060,7 +1166,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setCurrentRoom(room);
       currentRoomRef.current = room; // Sync ref immediately
       
-      const hostFlag = room.hostId === socket.id;
+      const myIdVal = socketProxy.id || myId;
+      const me = room.players?.find(p => p.id === myIdVal);
+      if (me) myShortIdRef.current = me.shortId || null;
+
+      const hostFlag = room.hostId === myIdVal;
       if (hostFlag !== isHostRef.current) {
         setIsHost(hostFlag);
         isHostRef.current = hostFlag;
