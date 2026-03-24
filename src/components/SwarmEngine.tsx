@@ -217,22 +217,32 @@ class SocketProxy {
           enemy.lastUpdate = Date.now();
           if (enemy.units.length > 0) enemy.units[0].hp = hp;
           
-          // HARD BINARY SYNC: FORCE unitCount and isAlive
-          enemy.score = unitCount;
+          // TOTAL BINARY SYNC: FORCE unitCount and isAlive
+          enemy.score = unitCount; // Update visual score
+          enemy.lastKnownUnitCount = unitCount; // Internal sync count
+
           if (unitCount === 0) {
             enemy.isAlive = false;
-            enemy.units = []; // Clear units immediately
+            enemy.units = []; 
           } else {
             enemy.isAlive = true;
-            // Ensure enemy has at least one unit if unitCount > 0 for rendering
-            if (enemy.units.length === 0) {
-               enemy.units.push({
-                 id: 'remote_head_' + enemy.id,
-                 pos: { x, y },
-                 hp: hp,
-                 maxHp: 100,
-                 type: 'soldier'
-               });
+            // Force physical unit count sync
+            if (enemy.units.length !== unitCount) {
+               if (enemy.units.length < unitCount) {
+                  const diff = unitCount - enemy.units.length;
+                  for (let i = 0; i < diff; i++) {
+                    enemy.units.push({
+                      id: `remote_${enemy.id}_${Date.now()}_${i}`,
+                      pos: { x: x + (Math.random()-0.5)*50, y: y + (Math.random()-0.5)*50 },
+                      hp: hp,
+                      maxHp: 100,
+                      type: 'soldier',
+                      color: enemy.color
+                    } as any);
+                  }
+               } else {
+                  enemy.units = enemy.units.slice(0, unitCount);
+               }
             }
           }
         }
@@ -1071,9 +1081,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           kills: killsRef.current
         });
 
-        ENGINE_STATE = 'MATCH_RESULTS';
-        setGameState('MATCH_RESULTS');
-        gameStateRef.current = 'MATCH_RESULTS';
+        // Removed local trigger. Only server decides via game_over_final.
         saveFinalStats(false);
         setIsSpectator(true);
       }
@@ -1103,9 +1111,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           kills: killsRef.current
         });
         
-        ENGINE_STATE = 'MATCH_RESULTS';
-        setGameState('MATCH_RESULTS');
-        gameStateRef.current = 'MATCH_RESULTS';
+        // Removed local trigger. Only server decides via game_over_final.
         saveFinalStats(false);
         setIsSpectator(true);
       } else {
@@ -1397,10 +1403,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         });
                         
                         saveFinalStats(false);
-                        
-                        ENGINE_STATE = 'MATCH_RESULTS';
-                        setGameState('MATCH_RESULTS');
-                        gameStateRef.current = 'MATCH_RESULTS';
                         setIsSpectator(true);
                     } else if (idx === 0 && p.units.length > 1) {
                         // If somehow the commander was targeted but has army, 
@@ -1438,9 +1440,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         saveFinalStats(false);
                       }
 
-                      ENGINE_STATE = 'MATCH_RESULTS';
-                      setGameState('MATCH_RESULTS');
-                      gameStateRef.current = 'MATCH_RESULTS';
                       setIsSpectator(true);
                     }
                 }
@@ -4717,9 +4716,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     saveFinalStats(false);
                   }
 
-                  ENGINE_STATE = 'MATCH_RESULTS';
-                  setGameState('MATCH_RESULTS');
-                  gameStateRef.current = 'MATCH_RESULTS';
                   setIsSpectator(true);
                   
                   // Inform server
@@ -4804,9 +4800,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               kills: killsRef.current
             });
             
-            ENGINE_STATE = 'MATCH_RESULTS';
-            setGameState('MATCH_RESULTS');
-            gameStateRef.current = 'MATCH_RESULTS';
+            // Removed: local trigger. Only server decides via game_over_final.
             saveFinalStats(true);
             setIsSpectator(true);
         }

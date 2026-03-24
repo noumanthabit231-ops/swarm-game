@@ -154,6 +154,9 @@ const server = uWS.App().ws('/*', {
     // ВЫСОКОЧАСТОТНЫЕ ДАННЫЕ (БИНАРНЫЕ)
     if (isBinary) {
       if (ws.roomId) {
+        // TOTAL BINARY BROADCAST: Мгновенная пересылка байтов всем в комнате (uWS mode)
+        ws.publish(ws.roomId, message, true);
+
         // РАСПАКОВКА И ОБНОВЛЕНИЕ ПАМЯТИ СЕРВЕРА (Арбитраж)
         const room = rooms.get(ws.roomId);
         if (room) {
@@ -171,8 +174,6 @@ const server = uWS.App().ws('/*', {
             }
           }
         }
-        // Просто перекидываем байты в комнату без парсинга JSON
-        ws.publish(ws.roomId, message, true);
       }
       return;
     }
