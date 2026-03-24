@@ -972,12 +972,13 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     const angle = (facingAngle || 0) + Math.PI / 2;
     const cosA = Math.cos(angle);
     const sinA = Math.sin(angle);
-    const cols = 4;
-    const xSpacing = 28;
-    const ySpacing = 34;
+    const cols = 6;
+    const xSpacing = 36;
+    const ySpacing = 42;
     const row = Math.floor(followerIndex / cols);
     const col = followerIndex % cols;
-    const ox = (col - 1.5) * xSpacing;
+    const rowOffset = row % 2 === 0 ? 0 : xSpacing * 0.5;
+    const ox = (col - (cols - 1) / 2) * xSpacing + rowOffset;
     const oy = (row + 1) * ySpacing;
 
     return {
@@ -3047,7 +3048,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const startLobbyArena = useCallback((players: LobbyPlayer[]) => {
-    setKills(0); setScore(1); setTotalRecruitsMatch(1); 
+    setKills(0); setScore(0); setTotalRecruitsMatch(0); 
     worldSizeRef.current = LOBBY_WORLD_SIZE;
     const lobbyMap = MapGenerator.generate(123, LOBBY_WORLD_SIZE);
     gameMapRef.current = {
@@ -3142,7 +3143,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
   const initGame = useCallback((seed: number, players: Entity[]) => {
     // Initialize battle arena
-    setKills(0); setScore(1); setTotalRecruitsMatch(1); 
+    setKills(0); setScore(0); setTotalRecruitsMatch(0); 
     
     // Dynamic World Size based on player count
     const playerCount = players?.length || 1;
@@ -3348,11 +3349,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         
         // Dash cost & effect
         if (ent.isDashing && ent.units.length > MIN_UNITS_TO_DASH) {
-          ent.score -= DASH_COST_PER_FRAME * dt_scale;
-          if (Math.floor(ent.score) < ent.units.length && ent.units.length > 1) {
-            ent.units.pop();
-            if (ent.id === myId) setScore(ent.units.length);
-          }
+          ent.score = Math.max(0, ent.score);
         }
     });
 
@@ -4778,7 +4775,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               // Optimization: Only update score state if significant or throttled
               const now = Date.now();
               if (now - lastUIUpdateTimeRef.current > 200 || ent.units.length === 0) {
-                  setScore(ent.units.length);
+                  setScore(Math.max(0, ent.units.length - 1));
                   // Note: we don't update lastUIUpdateTimeRef here to allow leaderboard to update too
               }
               
@@ -4826,7 +4823,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     // Optimization: Throttle UI updates for leaderboard and active players (every 500ms)
     const now_ui = Date.now();
     if (now_ui - lastUIUpdateTimeRef.current > 500) {
-        setLeaderboard(allAlivePlayers.map(e => ({ name: e.name, score: e.units.length })).sort((a, b) => b.score - a.score).slice(0, 5));
+        setLeaderboard(allAlivePlayers.map(e => ({ name: e.name, score: Math.max(0, e.units.length - 1) })).sort((a, b) => b.score - a.score).slice(0, 5));
         setActivePlayers(allAlivePlayers.length);
         lastUIUpdateTimeRef.current = now_ui;
     }
@@ -7267,7 +7264,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                               for(let i=0; i<count; i++) {
                                 playerRef.current.units.push({ id: generateId(), pos: { ...playerRef.current.units[0].pos }, color: playerRef.current.color, type: 'infantry', hp: 100 });
                               }
-                              setScore(playerRef.current.units.length);
+                              setScore(Math.max(0, playerRef.current.units.length - 1));
                               createDust(playerRef.current.units[0].pos.x, playerRef.current.units[0].pos.y, playerRef.current.color);
                             } else {
                               showError(t.notEnoughAkce || "Not enough Akçe!");
