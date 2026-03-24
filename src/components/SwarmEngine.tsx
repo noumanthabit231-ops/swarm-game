@@ -217,51 +217,55 @@ class SocketProxy {
 
     this.ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        const view = new DataView(event.data);
-        const shortId = view.getUint32(0, true);
-        const x = view.getFloat32(4, true);
-        const y = view.getFloat32(8, true);
-        const rotation = view.getFloat32(12, true);
-        const hp = view.getFloat32(16, true);
-        const unitCount = view.getUint32(20, true);
-        const isUnderground = view.getUint8(24) === 1; // SYNC UNDERGROUND STATE
+        try {
+          const view = new DataView(event.data);
+          const shortId = view.getUint32(0, true);
+          const x = view.getFloat32(4, true);
+          const y = view.getFloat32(8, true);
+          const rotation = view.getFloat32(12, true);
+          const hp = view.getFloat32(16, true);
+          const unitCount = view.getUint32(20, true);
+          const isUnderground = view.getUint8(24) === 1; // SYNC UNDERGROUND STATE
 
-        const enemy = this.entitiesRef.current.find(e => e.shortId === shortId);
-        if (enemy && enemy.id !== this.id) {
-          enemy.targetPos = { x, y };
-          enemy.targetAngle = rotation;
-          enemy.lastUpdate = Date.now();
-          enemy.isUnderground = isUnderground; // SYNC STATE
-          if (enemy.units.length > 0) enemy.units[0].hp = hp;
-          
-          // TOTAL BINARY SYNC: FORCE unitCount and isAlive
-          enemy.score = unitCount; // Update visual score
-          enemy.lastKnownUnitCount = unitCount; // Internal sync count
+          const enemy = this.entitiesRef.current.find(e => e && e.shortId === shortId);
+          if (enemy && enemy.id !== this.id) {
+            enemy.targetPos = { x, y };
+            enemy.targetAngle = rotation;
+            enemy.lastUpdate = Date.now();
+            enemy.isUnderground = isUnderground; // SYNC STATE
+            if (enemy.units && enemy.units.length > 0) enemy.units[0].hp = hp;
+            
+            // TOTAL BINARY SYNC: FORCE unitCount and isAlive
+            enemy.score = unitCount; // Update visual score
+            enemy.lastKnownUnitCount = unitCount; // Internal sync count
 
-          if (unitCount === 0) {
-            enemy.isAlive = false;
-            enemy.units = []; 
-          } else {
-            enemy.isAlive = true;
-            // Force physical unit count sync
-            if (enemy.units.length !== unitCount) {
-               if (enemy.units.length < unitCount) {
-                  const diff = unitCount - enemy.units.length;
-                  for (let i = 0; i < diff; i++) {
-                    enemy.units.push({
-                      id: `remote_${enemy.id}_${Date.now()}_${i}`,
-                      pos: { x: x + (Math.random()-0.5)*50, y: y + (Math.random()-0.5)*50 },
-                      hp: hp,
-                      maxHp: 100,
-                      type: 'soldier',
-                      color: enemy.color
-                    } as any);
-                  }
-               } else {
-                  enemy.units = enemy.units.slice(0, unitCount);
-               }
+            if (unitCount === 0) {
+              enemy.isAlive = false;
+              enemy.units = []; 
+            } else {
+              enemy.isAlive = true;
+              // Force physical unit count sync
+              if (enemy.units && enemy.units.length !== unitCount) {
+                 if (enemy.units.length < unitCount) {
+                    const diff = unitCount - enemy.units.length;
+                    for (let i = 0; i < diff; i++) {
+                      enemy.units.push({
+                        id: `remote_${enemy.id}_${Date.now()}_${i}`,
+                        pos: { x: x + (Math.random()-0.5)*50, y: y + (Math.random()-0.5)*50 },
+                        hp: hp,
+                        maxHp: 100,
+                        type: 'soldier',
+                        color: enemy.color
+                      } as any);
+                    }
+                 } else {
+                    enemy.units = enemy.units.slice(0, unitCount);
+                 }
+              }
             }
           }
+        } catch (e) {
+          console.error("Binary message error", e);
         }
         return;
       }
@@ -2339,6 +2343,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // Handle Buildings - PURE POSITION DISPLACEMENT (NO DAMAGE)
     for (const t of towers) {
+      if (!t || !t.pos) continue;
       if (t.type === 'gate' && t.isOpen) continue;
       
       // Optimization: Skip buildings that are clearly too far
@@ -2414,11 +2419,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         const p = playerRef.current;
         if (p.equippedItem === 'shovel' || p.equippedItem === 'super_shovel') {
           // Digging mechanic
-          if (p.shovelUses && p.shovelUses > 0) {
+          if (p.shovelUses && p.shovelUses > 0 && p.units && p.units.length > 0 && p.units[0].pos) {
+            const headPos = p.units[0].pos;
             p.shovelUses -= 1;
             p.attackTimer = 300;
             p.attackCooldown = 500;
-            createDust(p.units[0].pos.x, p.units[0].pos.y, '#78350f'); // Dirt color
+            createDust(headPos.x, headPos.y, '#78350f'); // Dirt color
             
             if (p.shovelUses <= 0) {
               p.equippedItem = 'sword'; // Break shovel
@@ -2429,8 +2435,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const newTunnelObj = {
               id: generateId('tunnel'),
               type: 'tunnel',
-              x: p.units[0].pos.x,
-              y: p.units[0].pos.y,
+              x: headPos.x,
+              y: headPos.y,
               ownerId: p.id,
               faction: p.color,
               hp: 999999
@@ -3426,11 +3432,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
 
         // Tunnel Entrance Interaction
-        if (ent.id === sid) {
+        if (ent.id === sid && head && head.pos) {
             let foundTunnel: any = null;
             // Now look for tunnels inside tunnels array (separated from buildings)
             tunnelsRef.current.forEach(b => {
-                if (getDistance(head.pos, b.pos) < 120) {
+                if (b && b.pos && getDistance(head.pos, b.pos) < 120) {
                     foundTunnel = b;
                 }
             });
@@ -4971,6 +4977,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     };
 
     const render = () => {
+      try {
       const w = window.innerWidth, h = window.innerHeight;
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
       
@@ -5016,10 +5023,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       ctx.lineWidth = 10;
       ctx.strokeRect(0, 0, currentWorldSize, currentWorldSize);
 
-      const localHeadPos = playerRef.current?.units[0]?.pos;
+      const localHeadPos = playerRef.current?.units && playerRef.current.units.length > 0 ? playerRef.current.units[0].pos : null;
 
       // Protection Circles (Drawn below everything)
       caravansRef.current.forEach(c => {
+        if (!c || !c.pos) return;
         const sid = socketProxyRef.current?.id || myIdRef.current;
         if (c.escortOwnerId === sid) {
            const ESCORT_RADIUS = 250;
@@ -5042,11 +5050,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Tunnels (Separate from buildings)
       tunnelsRef.current.forEach(t => {
+        if (!t || !t.pos) return; // Null check
         if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
         const p = playerRef.current;
 
         // Fog of War: Hide enemy buildings if too far (unless spectator)
-        if (!isSpectatorRef.current && localHeadPos) {
+        if (!isSpectatorRef.current && localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined) {
           const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
           if (d > VISION_RADIUS && t.ownerId !== myId) return;
         }
@@ -5063,7 +5072,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ctx.beginPath(); ctx.ellipse(0, 0, 15, 8, 0, 0, Math.PI * 2); ctx.fill();
 
         // Interaction Hint
-        if (localHeadPos && gameState === 'GAME_ACTIVE') {
+        if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && gameState === 'GAME_ACTIVE') {
           const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
           if (dist < 300) {
             const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
@@ -5129,6 +5138,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       });
 
       towersRef.current.forEach(t => {
+        if (!t || !t.pos) return; // Null check
         if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
         
         const p = playerRef.current;
@@ -5138,7 +5148,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (p?.isUnderground) return;
 
         // Fog of War: Hide enemy buildings if too far (unless spectator)
-        if (!isSpectatorRef.current && localHeadPos) {
+        if (!isSpectatorRef.current && localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined) {
           const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
           if (d > VISION_RADIUS && t.ownerId !== myId) return;
         }
@@ -5446,7 +5456,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             ctx.fillRect(-10, -30, 20, 10);
             
             // Interaction Hint (Press F to Open/Close) - Only for owner
-            if (localHeadPos && (t.ownerId === myId || t.color === playerRef.current?.color || t.faction === playerRef.current?.color)) {
+            if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && (t.ownerId === myId || t.color === playerRef.current?.color || t.faction === playerRef.current?.color)) {
                 const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
                 if (dist < 150) {
                     const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
@@ -5654,6 +5664,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           ctx.restore();
       });
       projectilesRef.current.forEach(pr => {
+        if (!pr || !pr.pos) return;
         if (!isPointInView(pr.pos.x, pr.pos.y, 100)) return;
         const px = pr.pos.x, py = pr.pos.y;
         
@@ -5713,6 +5724,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Obstacles (Base layer)
       gameMapRef.current.obstacles.forEach(o => {
+          if (!o || !o.center) return;
           if (!isPointInView(o.center.x, o.center.y, o.radius + 150)) return;
           const ox = o.center.x, oy = o.center.y;
           
@@ -5839,6 +5851,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // --- RENDER CARAVANS REWRITE ---
       caravansRef.current.forEach(c => {
+        if (!c || !c.pos) return;
         if (!isPointInView(c.pos.x, c.pos.y, 100)) return;
         // NEW: Layer isolation for Caravans (Surface only)
         if (!isSpectatorRef.current && playerRef.current?.isUnderground) return;
@@ -5850,7 +5863,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         const sid = socketProxyRef.current?.id || myIdRef.current;
         const isMeEscorting = c.escortOwnerId === sid;
 
-        if (isMeEscorting || (!c.escortOwnerId && playerRef.current && getDistance(c.pos, playerRef.current.units[0]?.pos) < 400)) {
+        const pHead = playerRef.current?.units && playerRef.current.units.length > 0 ? playerRef.current.units[0] : null;
+
+        if (isMeEscorting || (!c.escortOwnerId && pHead && getDistance(c.pos, pHead.pos) < 400)) {
             ctx.beginPath();
             ctx.arc(0, 0, 250, 0, Math.PI * 2);
             ctx.fillStyle = isMeEscorting ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 255, 255, 0.05)';
@@ -5923,7 +5938,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             }
         } else {
             // Display "Press F" hint
-            const pHead = playerRef.current?.units[0];
             if (pHead && getDistance(c.pos, pHead.pos) < 250) {
                 const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
                 ctx.save();
@@ -5971,6 +5985,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Neutrals
       neutralsRef.current.forEach(n => {
+        if (!n || !n.pos) return;
         if (!isPointInView(n.pos.x, n.pos.y, 100)) return;
         // NEW: Layer isolation for Neutrals (Holops are surface only)
         if (!isSpectatorRef.current && playerRef.current?.isUnderground) return;
@@ -5986,6 +6001,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
 
       garrisonsRef.current.forEach(g => {
+          if (!g || !g.pos || !g.units || g.units.length === 0) return;
           if (isPointInView(g.pos.x, g.pos.y, 300)) {
                // NEW: Layer Isolation for Garrisons
                if (!isSpectatorRef.current && g.isUnderground !== playerRef.current?.isUnderground) {
@@ -6004,7 +6020,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                ctx.globalAlpha = opacity;
 
                g.units.forEach((u, i) => {
-                  if (!isPointInView(u.pos.x, u.pos.y, 100)) return;
+                  if (!u || !u.pos || !isPointInView(u.pos.x, u.pos.y, 100)) return;
 
                   if (!isAttacking) {
                     // Use sprite for all non-attacking units (BATCH-LIKE)
@@ -6017,7 +6033,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               
               if (g.mode === 'RECALL') {
                   const owner = entitiesRef.current.find(e => e.id === g.ownerId);
-                  if (owner && owner.units.length > 0) {
+                  if (owner && owner.units && owner.units.length > 0 && owner.units[0].pos) {
                       ctx.setLineDash([5, 5]);
                       ctx.strokeStyle = 'rgba(255,255,255,0.3)';
                       ctx.beginPath();
@@ -6120,8 +6136,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           });
       }
 
-          drawEntities.forEach(ent => {
+      drawEntities.forEach(ent => {
+          if (!ent || !ent.units || ent.units.length === 0) return;
           const head = ent.units[0];
+          if (!head || !head.pos) return;
           
           // NEW: 100% Stealth Isolation - Underground players are fully invisible to enemies
           const p = playerRef.current;
@@ -6159,7 +6177,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           
           // Draw regular units first
           ent.units.forEach((u, i) => {
-              if (i === 0) return; // Skip commander
+              if (i === 0 || !u || !u.pos) return; // Skip commander or invalid units
               if (!isPointInView(u.pos.x, u.pos.y, VIEWPORT_BUFFER)) return;
 
               // Use sprite for ALL non-attacking units (HUGE performance gain)
@@ -6176,7 +6194,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           ctx.globalAlpha = 1.0;
 
           // Draw commander last to be on top
-          if (isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER)) {
+          if (head && head.pos && isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER)) {
               if (ent.id === myId && isSpectatorRef.current) {
                   drawUnit(ctx, head.pos.x, head.pos.y, '#888888', true, ent.facingAngle, ent.isAttacking, ent.attackTimer, 0.4, head.type, initialEmpire.id, ent.equippedItem);
                   
@@ -6197,7 +6215,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               }
           }
           
-          if (!hideName || ent.id === myId) {
+          if (head && head.pos && (!hideName || ent.id === myId)) {
               ctx.fillStyle = ent.id === myId ? '#fbbf24' : 'white';
               ctx.font = '900 14px Inter'; ctx.textAlign = 'center';
               ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
@@ -6205,7 +6223,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               ctx.shadowBlur = 0;
           }
           
-        if (ent.id === myId && ent.attackCooldown > 0) {
+        if (head && head.pos && ent.id === myId && ent.attackCooldown > 0) {
             const barW = 40, barH = 4;
             ctx.fillStyle = 'rgba(0,0,0,0.5)';
             ctx.fillRect(head.pos.x - barW/2, head.pos.y + 30, barW, barH);
