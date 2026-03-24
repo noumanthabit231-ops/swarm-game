@@ -181,18 +181,34 @@ class SocketProxy {
   id: string = '';
   connected: boolean = false;
   listeners: { [key: string]: Function[] } = {};
+  url: string;
   myShortIdRef: React.MutableRefObject<number | null>;
   entitiesRef: React.MutableRefObject<Entity[]>;
   setMyId: (id: string) => void;
   setLastEvent: (event: string) => void;
 
   constructor(url: string, myShortIdRef: React.MutableRefObject<number | null>, entitiesRef: React.MutableRefObject<Entity[]>, setMyId: (id: string) => void, setLastEvent: (event: string) => void) {
-    this.ws = new WebSocket(url);
-    this.ws.binaryType = 'arraybuffer';
+    this.url = url;
     this.myShortIdRef = myShortIdRef;
     this.entitiesRef = entitiesRef;
     this.setMyId = setMyId;
     this.setLastEvent = setLastEvent;
+    
+    // Initial connection (ws needs to be initialized first for type safety if used elsewhere before connect)
+    this.ws = new WebSocket(this.url);
+    this.setupSocket();
+  }
+
+  connect() {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.ws = new WebSocket(this.url);
+    this.setupSocket();
+  }
+
+  private setupSocket() {
+    this.ws.binaryType = 'arraybuffer';
 
     this.ws.onopen = () => {
       this.connected = true;
