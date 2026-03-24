@@ -784,11 +784,10 @@ const drawBuilding = (
     ctx.save();
     ctx.translate(tx, ty);
     
-    // Shadow for depth
-    ctx.shadowColor = 'rgba(0,0,0,0.4)';
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetX = 5;
-    ctx.shadowOffsetY = 5;
+    ctx.shadowColor = 'rgba(0,0,0,0.55)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetX = 6;
+    ctx.shadowOffsetY = 14;
 
     let renderEmpireId = t.empireId;
     if (!renderEmpireId || renderEmpireId === 'neutral') {
@@ -815,45 +814,31 @@ const drawBuilding = (
         const drawLen = drawEnd - drawStart;
 
         if (renderEmpireId === 'rim') {
-          // --- Российская Империя: Стены из темных бревен ---
-          const wallGrad = ctx.createLinearGradient(drawStart, 0, drawEnd, 0);
-          wallGrad.addColorStop(0, '#2b1d1a');
-          wallGrad.addColorStop(0.5, '#3e2723');
-          wallGrad.addColorStop(1, '#2b1d1a');
+          const wallGrad = ctx.createLinearGradient(drawStart, -18, drawEnd, 18);
+          wallGrad.addColorStop(0, '#8d6e63');
+          wallGrad.addColorStop(1, '#5d4037');
           ctx.fillStyle = wallGrad;
           ctx.fillRect(drawStart, -18, drawLen, 36);
-          
-          // Штриховка бревен
-          ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-          ctx.lineWidth = 2;
-          for(let i=drawStart; i<drawEnd; i+=10) {
-            ctx.beginPath(); ctx.moveTo(i, -18); ctx.lineTo(i, 18); ctx.stroke();
-            // Текстура дерева
-            ctx.beginPath(); ctx.moveTo(i+5, -10); ctx.lineTo(i+5, 10); ctx.stroke();
-          }
+          ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+          ctx.lineWidth = 1.5;
+          for(let i=drawStart; i<drawEnd; i+=8){ctx.beginPath();ctx.moveTo(i,-18);ctx.lineTo(i,18);ctx.stroke();}
+          ctx.fillStyle = '#3e2723';
+          for(let i=drawStart+6;i<drawEnd;i+=16){ctx.beginPath();ctx.arc(i,-18,3,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.arc(i,18,3,0,Math.PI*2);ctx.fill();}
         } else if (renderEmpireId === 'fim') {
-          // --- Французская Империя: Серый камень ---
-          ctx.fillStyle = '#94a3b8';
+          ctx.fillStyle = '#cbd5e1';
           ctx.fillRect(drawStart, -20, drawLen, 40);
-          // Каменная текстура
-          ctx.strokeStyle = '#475569'; ctx.lineWidth = 1;
-          for(let i=drawStart; i<drawEnd; i+=20) {
-            ctx.strokeRect(i, -20, 20, 20);
-            ctx.strokeRect(i+10, 0, 20, 20);
-          }
+          ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1;
+          for(let i=drawStart;i<drawEnd;i+=18){for(let j=-20;j<20;j+=12){ctx.strokeRect(i,j,18,12);}}
+          ctx.fillStyle = '#94a3b8'; ctx.fillRect(drawStart, 8, drawLen, 4);
         } else {
-          // --- Османская Империя: Песчаник и узоры ---
-          ctx.fillStyle = '#d4a373';
+          ctx.fillStyle = '#9ca3af';
           ctx.fillRect(drawStart, -18, drawLen, 36);
-          ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1.5;
-          for(let i=drawStart; i<drawEnd; i+=25) {
-            ctx.beginPath();
-            ctx.arc(i+12, 0, 8, 0, Math.PI * 2);
-            ctx.stroke();
-          }
+          ctx.strokeStyle = '#6b7280'; ctx.lineWidth = 1.5;
+          for(let i=drawStart;i<drawEnd;i+=22){ctx.beginPath();ctx.moveTo(i,-18);ctx.lineTo(i+6,-10);ctx.lineTo(i+6,10);ctx.lineTo(i,18);ctx.closePath();ctx.stroke();}
+          ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(drawStart+4,-18); ctx.lineTo(drawEnd-4,-18); ctx.stroke();
         }
         
-        // Полоса цвета империи
         ctx.fillStyle = t.color;
         ctx.globalAlpha = 0.6;
         ctx.fillRect(drawStart + 2, 8, drawLen - 4, 6);
@@ -863,92 +848,81 @@ const drawBuilding = (
         if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
         
         if (renderEmpireId === 'rim') {
-          // --- Российская Империя: Тяжелый бревенчатый сруб ---
-          ctx.fillStyle = '#3e2723';
+          const gGrad = ctx.createLinearGradient(-50, -30, 50, 30);
+          gGrad.addColorStop(0, '#8d6e63');
+          gGrad.addColorStop(1, '#5d4037');
+          ctx.fillStyle = gGrad;
           ctx.fillRect(-50, -30, 100, 60);
           if (!t.isOpen) {
-            // Кованые железные перемычки
-            ctx.fillStyle = '#1a1a1a';
-            ctx.fillRect(-45, -15, 90, 6);
-            ctx.fillRect(-45, 10, 90, 6);
-            // Заклепки
-            ctx.fillStyle = '#475569';
-            for(let i=-40; i<=40; i+=20) {
-                ctx.beginPath(); ctx.arc(i, -12, 3, 0, Math.PI*2); ctx.fill();
-                ctx.beginPath(); ctx.arc(i, 13, 3, 0, Math.PI*2); ctx.fill();
-            }
+            ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 2;
+            for(let y=-20;y<=20;y+=8){ctx.beginPath();ctx.moveTo(-50,y);ctx.lineTo(50,y);ctx.stroke();}
+            ctx.fillStyle = '#1f2937'; ctx.fillRect(-45,-6,90,12);
           }
         } else if (renderEmpireId === 'fim') {
-          // --- Французская Империя: Каменная арка с решеткой ---
-          ctx.fillStyle = '#64748b';
+          ctx.fillStyle = '#94a3b8';
           ctx.fillRect(-55, -30, 110, 60);
           if (!t.isOpen) {
-            // Решетка (Portcullis)
             ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 3;
-            for(let i=-45; i<=45; i+=15) {
-              ctx.beginPath(); ctx.moveTo(i, -25); ctx.lineTo(i, 25); ctx.stroke();
-            }
-            for(let j=-20; j<=20; j+=15) {
-              ctx.beginPath(); ctx.moveTo(-45, j); ctx.lineTo(45, j); ctx.stroke();
-            }
-            // Герб
+            for(let i=-45;i<=45;i+=15){ctx.beginPath();ctx.moveTo(i,-25);ctx.lineTo(i,25);ctx.stroke();}
+            for(let j=-20;j<=20;j+=15){ctx.beginPath();ctx.moveTo(-45,j);ctx.lineTo(45,j);ctx.stroke();}
             ctx.fillStyle = '#fbbf24';
-            ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(8, 0); ctx.lineTo(0, 10); ctx.lineTo(-8, 0); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(0,-6); ctx.lineTo(6,0); ctx.lineTo(0,6); ctx.lineTo(-6,0); ctx.fill();
           }
         } else {
-          // --- Османская Империя: Массивная арка с вязью ---
-          ctx.fillStyle = '#bc8a5f';
+          ctx.fillStyle = '#9ca3af';
           ctx.fillRect(-60, -30, 120, 60);
           if (!t.isOpen) {
-            ctx.fillStyle = '#d4a373';
-            ctx.beginPath(); 
-            ctx.moveTo(-45, 25); ctx.lineTo(-45, -10); 
-            ctx.quadraticCurveTo(0, -45, 45, -10); ctx.lineTo(45, 25); ctx.fill();
-            
-            // Золотая отделка
-            ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2.5;
-            ctx.stroke();
-            
-            // Арабская вязь (имитация штрихами)
-            ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 1;
-            for(let i=-30; i<=30; i+=10) {
-                ctx.beginPath(); ctx.moveTo(i, -15); ctx.quadraticCurveTo(i+5, -25, i+10, -15); ctx.stroke();
-            }
+            ctx.fillStyle = '#d1d5db';
+            ctx.beginPath(); ctx.moveTo(-45,25); ctx.lineTo(-45,-8); ctx.quadraticCurveTo(0,-42,45,-8); ctx.lineTo(45,25); ctx.fill();
+            ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(-45,-8); ctx.quadraticCurveTo(0,-42,45,-8); ctx.stroke();
+            ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1;
+            for(let i=-36;i<=36;i+=12){ctx.beginPath();ctx.moveTo(i,-5);ctx.quadraticCurveTo(i+4,-15,i+8,-5);ctx.stroke();}
           }
         }
     } else if (t.type === 'tower') {
         if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
-        
-        // Общая тень основания
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        ctx.beginPath(); ctx.arc(0, 0, 55, 0, Math.PI*2); ctx.fill();
-
+        const rx=46, ry=18, ty0=-20, h=52;
         if (renderEmpireId === 'rim') {
-          // --- Россия (Red): Тёмно-коричневый квадрат, красный треугольник ---
-          ctx.fillStyle = '#3e2723'; // Тёмно-коричневый
-          ctx.fillRect(-45, -45, 90, 90);
-          
-          ctx.fillStyle = t.color || '#ef4444'; // Цвет фракции для крыши
-          ctx.beginPath(); ctx.moveTo(-55, -45); ctx.lineTo(55, -45); ctx.lineTo(0, -120); ctx.fill();
-          
+          const topGrad = ctx.createLinearGradient(-rx, ty0-ry, rx, ty0+ry);
+          topGrad.addColorStop(0,'#e8c39e'); topGrad.addColorStop(1,'#c79a6b');
+          ctx.fillStyle = topGrad;
+          ctx.beginPath(); ctx.moveTo(0,ty0-ry); ctx.lineTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(-rx,ty0); ctx.closePath(); ctx.fill();
+          const sideGrad = ctx.createLinearGradient(rx, ty0, rx, ty0+h);
+          sideGrad.addColorStop(0,'#b58857'); sideGrad.addColorStop(1,'#7a5530');
+          ctx.fillStyle = sideGrad;
+          ctx.beginPath(); ctx.moveTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(0,ty0+ry+h); ctx.lineTo(rx,ty0+h); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
+          for(let y=ty0+6;y<ty0+h;y+=6){ctx.beginPath();ctx.moveTo(2,y);ctx.lineTo(rx-2,y-3);ctx.stroke();}
+          const rbx=40, rby=24, rTop=ty0-ry-8;
+          const roofGrad = ctx.createLinearGradient(-rbx, rTop, rbx, rTop-90);
+          roofGrad.addColorStop(0, (t.color||'#ef4444')); roofGrad.addColorStop(1,'#7f1d1d');
+          ctx.fillStyle = roofGrad;
+          ctx.beginPath(); ctx.moveTo(-rbx, rTop); ctx.lineTo(rbx, rTop); ctx.lineTo(0, rTop-110); ctx.closePath(); ctx.fill();
         } else if (renderEmpireId === 'fim') {
-          // --- Франция (Blue): Светло-серый квадрат, узкий высокий конус ---
-          ctx.fillStyle = '#d1d5db'; // Светло-серый
-          ctx.fillRect(-40, -40, 80, 80);
-          
-          ctx.fillStyle = t.color || '#3b82f6'; // Цвет фракции для крыши
-          ctx.beginPath(); ctx.moveTo(-30, -40); ctx.lineTo(30, -40); ctx.lineTo(0, -160); ctx.fill();
-          
+          ctx.fillStyle = '#e5e7eb';
+          ctx.beginPath(); ctx.moveTo(0,ty0-ry); ctx.lineTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(-rx,ty0); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#cbd5e1';
+          ctx.beginPath(); ctx.moveTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(0,ty0+ry+h+30); ctx.lineTo(rx,ty0+h+30); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#d1d5db';
+          ctx.beginPath(); ctx.moveTo(-24,ty0-6); ctx.lineTo(24,ty0-6); ctx.lineTo(18,ty0-120); ctx.lineTo(-18,ty0-120); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#94a3b8';
+          for(let x=-22;x<=22;x+=10){ctx.fillRect(x,ty0-120,6,8);}
+          const roofGrad = ctx.createLinearGradient(-18, ty0-120, 18, ty0-170);
+          roofGrad.addColorStop(0, (t.color||'#3b82f6')); roofGrad.addColorStop(1,'#1e3a8a');
+          ctx.fillStyle = roofGrad;
+          ctx.beginPath(); ctx.moveTo(-24,ty0-120); ctx.lineTo(24,ty0-120); ctx.lineTo(0,ty0-180); ctx.closePath(); ctx.fill();
         } else {
-          // --- Османы (Green): Серый квадрат, бирюзовый купол, желтая точка ---
-          ctx.fillStyle = '#808080'; // Серый
-          ctx.fillRect(-45, -45, 90, 90);
-          
-          ctx.fillStyle = t.color || '#2dd4bf'; // Цвет фракции для крыши (купол)
-          ctx.beginPath(); ctx.arc(0, -45, 45, Math.PI, 0); ctx.fill();
-          
-          ctx.fillStyle = '#facc15'; // Жёлтая точка (шпиль)
-          ctx.beginPath(); ctx.arc(0, -95, 6, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle = '#9ca3af';
+          ctx.beginPath(); ctx.moveTo(0,ty0-ry); ctx.lineTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(-rx,ty0); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#6b7280';
+          ctx.beginPath(); ctx.moveTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(0,ty0+ry+h); ctx.lineTo(rx,ty0+h); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#4b5563';
+          for(let i=-2;i<=2;i++){ctx.fillRect(rx-14, ty0+8+i*12, 6, 10);}
+          const domeGrad = ctx.createRadialGradient(0, ty0-ry-26, 6, 0, ty0-ry-26, 42);
+          domeGrad.addColorStop(0,(t.color||'#2dd4bf')); domeGrad.addColorStop(1,'#0d9488');
+          ctx.fillStyle = domeGrad;
+          ctx.beginPath(); ctx.ellipse(0, ty0-ry-6, 42, 28, 0, Math.PI, 0); ctx.fill();
+          ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(0, ty0-ry-34, 5, 0, Math.PI*2); ctx.fill();
         }
     }
     
@@ -973,47 +947,34 @@ const drawProjectile = (ctx: CanvasRenderingContext2D, pr: any, isPointInView: (
     if (!isPointInView(pr.pos.x, pr.pos.y, 100)) return;
     const px = pr.pos.x, py = pr.pos.y;
     
-    let boltColor = '#fbbf24'; // Default Gold
-    let trailLen = 35;
-    let trailWidth = 6;
-    let shadowColor = boltColor;
+    let shellBase = '#4b5563';
+    let shellEdge = '#9ca3af';
+    let r = 9;
+    let smoke = 'rgba(0,0,0,0.25)';
 
     if (pr.empireId === 'rim') {
-      boltColor = '#475569'; // Dark Slate/Iron
-      shadowColor = '#94a3b8';
-      trailLen = 45;
-      trailWidth = 4;
+      shellBase = '#374151';
+      shellEdge = '#9aa5b1';
+      r = 10;
     } else if (pr.empireId === 'fim') {
-      boltColor = '#f97316'; // Orange/Fire
-      shadowColor = '#fbbf24';
-      trailLen = 30;
-      trailWidth = 8;
+      shellBase = '#1f2937';
+      shellEdge = '#cbd5e1';
+      r = 8;
     }
 
     ctx.save();
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = shadowColor;
-    
-    // Projectile Head
-    ctx.fillStyle = boltColor;
-    ctx.beginPath();
-    ctx.arc(px, py, pr.empireId === 'fim' ? 6 : 5, 0, Math.PI * 2);
-    ctx.fill();
-    
-    // Trail
-    const angle = Math.atan2(pr.vel.y, pr.vel.x);
-    const grad = ctx.createLinearGradient(px, py, px - Math.cos(angle) * trailLen, py - Math.sin(angle) * trailLen);
-    grad.addColorStop(0, boltColor);
-    grad.addColorStop(1, 'transparent');
-    
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = trailWidth;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(px, py);
-    ctx.lineTo(px - Math.cos(angle) * trailLen, py - Math.sin(angle) * trailLen);
-    ctx.stroke();
-    
+    ctx.shadowBlur = 14;
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    const g = ctx.createRadialGradient(px-3, py-3, 1, px, py, r);
+    g.addColorStop(0, shellEdge);
+    g.addColorStop(1, shellBase);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.beginPath(); ctx.arc(px-4, py-5, r*0.25, 0, Math.PI*2); ctx.fill();
+    const ang = Math.atan2(pr.vel.y, pr.vel.x);
+    ctx.fillStyle = smoke;
+    for(let i=1;i<=4;i++){const sx=px-Math.cos(ang)*i*10; const sy=py-Math.sin(ang)*i*10; ctx.beginPath(); ctx.arc(sx, sy, Math.max(1, r*0.3-i*0.3), 0, Math.PI*2); ctx.fill();}
     ctx.restore();
 };
 
