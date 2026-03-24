@@ -771,6 +771,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   // Networking State
   const socketProxyRef = useRef<SocketProxy | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
+  const lastEmitTimeRef = useRef({ move_update: 0, tunnel_update: 0 });
   const lastUIUpdateTimeRef = useRef<number>(0); // NEW: Throttle React state updates
   const [isHost, setIsHost] = useState(false);
   const isHostRef = useRef(false); // NEW: Reliable host ref
@@ -778,6 +779,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const myShortIdRef = useRef<number | null>(null); // Короткий ID для бинарной синхронизации
   const myIdRef = useRef(''); // Ref for myId to avoid closure issues
   useEffect(() => { myIdRef.current = myId; }, [myId]); // Sync ref
+  const canEmitNetworkEvent = useCallback((eventType: 'move_update' | 'tunnel_update') => {
+    const now = Date.now();
+    if (now - lastEmitTimeRef.current[eventType] <= 50) return false;
+    lastEmitTimeRef.current[eventType] = now;
+    return true;
+  }, []);
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const currentRoomRef = useRef<Room | null>(null);
@@ -1008,14 +1015,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('remote_hp_sync', (data: { id: string, hp: number }) => {
-      // --- HP SYNC (v2.9.5) ---
-      // Force physical unit HP update from server authority
       const ent = entitiesRef.current.find(e => e.id === data.id);
       if (ent && ent.units && ent.units.length > 0) {
         ent.units[0].hp = data.hp;
-        // If it's local player, also update state for UI
-        if (ent.id === myIdRef.current) {
-          // Local HP is usually managed by local logic, but server is authority
+        if (playerRef.current?.id === data.id && playerRef.current.units.length > 0) {
+          playerRef.current.units[0].hp = data.hp;
         }
       }
     });
@@ -1651,7 +1655,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('remote_tunnel_remove', (data: { id: string }) => {
-      console.log("RECEIVED REMOTE TUNNEL REMOVE:", data.id);
       tunnelsRef.current = tunnelsRef.current.filter(t => t.id !== data.id);
     });
 
@@ -2509,8 +2512,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             if (socketProxyRef.current) {
               const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
-              console.log("EMITTING TUNNEL TO SERVER:", currentRoomId, newTunnelObj);
-              socketProxyRef.current.emit('building_placed', { roomId: currentRoomId, ...newTunnelObj });
+              if (canEmitNetworkEvent('tunnel_update')) {
+                socketProxyRef.current.emit('tunnel_update', { roomId: currentRoomId, ...newTunnelObj });
+              }
             }
           }
         } else {
@@ -3523,7 +3527,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 
                 if (socketProxyRef.current) {
                     const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
-                    console.log("EMITTING HIDE PIT:", tid);
                     socketProxyRef.current.emit('hide_pit', { roomId: currentRoomId, id: tid });
                 }
                 if (keysRef.current['r']) keysRef.current['r'] = false;
@@ -4015,6 +4018,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   if (frameDamageMap.get(entityHitKey)! >= frameLimit) continue;
 
                   const damageVal = 100;
+                  const isRemotePlayerHit = isMultiplayer && !isTargetGarrison && entityMap.get(n.entityId)?.type === 'player';
                   if (e1.id === myId && tOwnerId !== myId) {
                       socketProxyRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
@@ -4026,23 +4030,22 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           isUndergroundAttack: e1.isUnderground // NEW: Sync underground status
                       });
                   }
-                  
-                  // Apply local damage
-                  n.unit.hp -= damageVal;
                   targetObj.lastDamageTime = now;
                   frameDamageMap.set(entityHitKey, frameDamageMap.get(entityHitKey)! + 1);
 
+                  if (isRemotePlayerHit) {
+                      createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
+                      continue;
+                  }
+
+                  n.unit.hp -= damageVal;
+
                   if (n.unit.hp <= 0) {
-                      // CRITICAL: VISUAL PREDICTION
-                      // If I am the attacker, I remove the unit locally IMMEDIATELY so it feels smooth.
-                      // If I am the victim, I remove it because it's my unit and I'm the authority.
-                      // If it's a garrison or AI, we also remove it locally.
                       if (isTargetGarrison || tOwnerId === myId || !isMultiplayer || (e1.id === myId)) {
                           unitsToRemove.add(n.unit.id);
                       }
                       
                       e1.swingKills = (e1.swingKills || 0) + 1;
-                      // "Hunting" reward: Killing neutrals (Holops) gives more than regular kills
                       const reward = (n.entityId === 'neutral') ? 15 : 5;
                       e1.akce += reward; 
                       if (e1.id === myId) { 
@@ -4050,7 +4053,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         setKills(k => k + 1); 
                         setPlayerAkce(e1.akce); 
                         if (reward > 5) {
-                          // Visual indicator for "Hunting" success
                           particlesRef.current.push({
                             pos: { ...n.unit.pos },
                             vel: { x: 0, y: -2 },
@@ -4185,6 +4187,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   const damageVal = 100; // Instakill
                   const isAttackerLocal = g.ownerId === myId;
                   const isAttackerHostAI = isHostRef.current && g.ownerId === 'ai';
+                  const isRemotePlayerHit = isMultiplayer && !isTargetGarrison && entityMap.get(n.entityId)?.type === 'player';
                   
                   if (isAttackerLocal || isAttackerHostAI) {
                     if (!isTargetGarrison) {
@@ -4209,10 +4212,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                       });
                     }
                   }
-                  
-                  n.unit.hp -= damageVal;
                   targetObj.lastDamageTime = now;
                   frameDamageMap.set(garrisonHitKey, (frameDamageMap.get(garrisonHitKey) || 0) + 1);
+
+                  if (isRemotePlayerHit) {
+                      createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
+                      continue;
+                  }
+
+                  n.unit.hp -= damageVal;
 
                   if (n.unit.hp <= 0) {
                       if (isTargetGarrison || tOwnerId === myId || !isMultiplayer || isAttackerLocal || isAttackerHostAI) {
@@ -4295,17 +4303,31 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             for (let ui = e.units.length - 1; ui >= 0; ui--) {
               if (hitCount >= maxHits) break;
               if (getDistance(impactP as Vector, e.units[ui].pos) < aoeR) {
-                e.units[ui].hp -= aoeD;
+                const isRemotePlayerHit = isMultiplayer && e.type === 'player';
                 hitCount++;
+                if (isRemotePlayerHit) {
+                  createDust(impactP!.x, impactP!.y, e.color);
+                  if (pr.ownerId === myId) {
+                      socketProxyRef.current?.emit('unit_hit', { 
+                          roomId: currentRoomRef.current?.id, 
+                          targetPlayerId: e.id, 
+                          damage: aoeD,
+                          unitIndex: ui,
+                          attackerId: pr.ownerId === myId ? 'tower' : pr.ownerId, // Marker for tower arbitration
+                          attackerName: nickname
+                      });
+                  }
+                  continue;
+                }
+
+                e.units[ui].hp -= aoeD;
                 if (e.units[ui].hp <= 0) {
-                  // VISUAL PREDICTION: Remove locally if we are attacker or owner
                   if (ui !== 0 || e.id === myId || !isMultiplayer || pr.ownerId === myId) {
                       e.units.splice(ui, 1);
                   }
                   
                   createDust(impactP!.x, impactP!.y, e.color);
                   
-                  // SERVER SYNC: Inform the server about the hit (Server will arbitrate and broadcast)
                   if (pr.ownerId === myId) {
                       socketProxyRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
@@ -4317,7 +4339,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                       });
                   }
                 } else if (pr.ownerId === myId) {
-                   // Still sync partial damage
                    socketProxyRef.current?.emit('unit_hit', { 
                        roomId: currentRoomRef.current?.id, 
                        targetPlayerId: e.id, 
@@ -4942,7 +4963,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     }
 
     // Network Sync (33Hz for better combat accuracy)
-    if (isMultiplayer && p && socketProxyRef.current && currentRoomRef.current && (Date.now() - lastSyncTimeRef.current > 30) && !isSpectatorRef.current) {
+    if (isMultiplayer && p && socketProxyRef.current && currentRoomRef.current && !isSpectatorRef.current && canEmitNetworkEvent('move_update')) {
       lastSyncTimeRef.current = Date.now();
       
       // SYNC GARRISONS: Owner sends their own, Host sends AI-owned
@@ -5045,413 +5066,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       viewBounds.top = cy - halfH;
       viewBounds.bottom = cy + halfH;
 
-      // --- RENDER HELPERS (v2.9.5) ---
-      const drawObstacle = (o: any) => {
-          if (!o || !o.center) return;
-          if (!isPointInView(o.center.x, o.center.y, o.radius + 150)) return;
-          
-          ctx.save();
-          if (o.type === 'grass') {
-              ctx.globalAlpha = 0.4;
-              ctx.fillStyle = '#166534';
-              ctx.beginPath();
-              ctx.arc(o.center.x, o.center.y, o.radius, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.globalAlpha = 1.0;
-          } else if (o.type === 'stone') {
-              ctx.fillStyle = '#4b5563';
-              ctx.beginPath();
-              ctx.arc(o.center.x, o.center.y, o.radius, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.strokeStyle = '#1f2937';
-              ctx.lineWidth = 4;
-              ctx.stroke();
-          }
-          ctx.restore();
-      };
-
-const drawTunnel = (t: any, localHeadPos: any, VISION_RADIUS: number, myId: string) => {
-        if (!t || !t.pos) return;
-        const tx = t.pos.x;
-        const ty = t.pos.y;
-        if (!isPointInView(tx, ty, 100)) return;
-        if (!isSpectatorRef.current && localHeadPos) {
-          const d = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-          if (d > VISION_RADIUS && t.ownerId !== myId) return;
-        }
-        ctx.save();
-        ctx.translate(tx, ty);
-        const size = 100;
-        if (images.pit && images.pit.complete && images.pit.naturalWidth !== 0) {
-          ctx.drawImage(images.pit, -size / 2, -size / 2, size, size);
-        } else {
-          // Fallback if image fails to load
-          ctx.fillStyle = '#5d4037';
-          ctx.beginPath();
-          ctx.arc(0, 0, 45, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#000000';
-          ctx.beginPath();
-          ctx.arc(0, 0, 30, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-      };
-
-      const drawBuilding = (t: any, localHeadPos: any, VISION_RADIUS: number, myId: string) => {
-        // --- DATA SAFETY CHECK (v2.9.3) ---
-        if (!t) return;
-        const tx = t.pos?.x !== undefined ? t.pos.x : t.x;
-        const ty = t.pos?.y !== undefined ? t.pos.y : t.y;
-        
-        if (tx === undefined || ty === undefined) return;
-        if (!isPointInView(tx, ty, 150)) return;
-        
-        const p = playerRef.current;
-
-        // Layer Isolation for buildings: If underground, hide walls/gates/towers.
-        if (p?.isUnderground) return;
-
-        // Fog of War: Hide enemy buildings if too far (unless spectator)
-        if (!isSpectatorRef.current && localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined) {
-          const d = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-          if (d > VISION_RADIUS && t.ownerId !== myId) return;
-        }
-
-        ctx.save();
-        ctx.translate(tx, ty);
-        
-        // Auto-detect empire style if missing or neutral (rendering safety)
-        let renderEmpireId = t.empireId;
-        if (!renderEmpireId || renderEmpireId === 'neutral') {
-          const owner = entitiesRef.current.find(e => e.id === t.ownerId || e.color === t.color);
-          if (owner) renderEmpireId = owner.empireId;
-        }
-
-        if (t.type === 'wall') {
-            const gx = Math.round(t.pos.x / GRID_SIZE);
-            const gy = Math.round(t.pos.y / GRID_SIZE);
-            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
-            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
-            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
-            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
-
-            if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
-
-            const isH = (t.rotation || 0) === 0;
-            const hasPrev = isH ? (n_l && (n_l.type==='wall' || n_l.type==='gate')) : (n_t && (n_t.type==='wall' || n_t.type==='gate'));
-            const hasNext = isH ? (n_r && (n_r.type==='wall' || n_r.type==='gate')) : (n_b && (n_b.type==='wall' || n_b.type==='gate'));
-
-            // Exact boundaries: 35 is grid edge, 55 is overlap into neighbor
-            const drawStart = hasPrev ? -55 : -35;
-            const drawEnd = hasNext ? 55 : 35;
-            const drawLen = drawEnd - drawStart;
-
-            if (renderEmpireId === 'rim') {
-              // --- Russian Palisade (Засека) ---
-              ctx.fillStyle = '#4e342e';
-              ctx.fillRect(drawStart, -15, drawLen, 30);
-              
-              // Log Pattern
-              ctx.fillStyle = '#5d4037';
-              const logWidth = 10;
-              const startLog = Math.floor(drawStart / logWidth);
-              const endLog = Math.ceil(drawEnd / logWidth);
-              for(let i = startLog; i < endLog; i++) {
-                const x = i * logWidth;
-                const h = 20 + Math.sin(i * 1.5) * 5;
-                ctx.beginPath();
-                ctx.moveTo(x + 1, -15);
-                ctx.lineTo(x + 5, -15 - h);
-                ctx.lineTo(x + 9, -15);
-                ctx.fill();
-              }
-              // Iron Reinforcement Bands
-              ctx.fillStyle = '#334155';
-              ctx.fillRect(drawStart, -5, drawLen, 4);
-              ctx.fillRect(drawStart, 10, drawLen, 4);
-            } else if (renderEmpireId === 'fim') {
-              // --- French Bastion Wall (Stone & Iron) ---
-              ctx.fillStyle = '#cbd5e1';
-              ctx.fillRect(drawStart, -18, drawLen, 36);
-              // Stone texture (repeating every 14px)
-              ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
-              const step = 14;
-              const sIdx = Math.floor(drawStart / step);
-              const eIdx = Math.ceil(drawEnd / step);
-              for(let i = sIdx; i <= eIdx; i++) {
-                ctx.beginPath(); ctx.moveTo(i*step, -18); ctx.lineTo(i*step, 18); ctx.stroke();
-              }
-              ctx.beginPath(); ctx.moveTo(drawStart, 0); ctx.lineTo(drawEnd, 0); ctx.stroke();
-              // Golden Top Railing
-              ctx.fillStyle = '#fbbf24';
-              ctx.fillRect(drawStart, -22, drawLen, 4);
-            } else {
-              // --- Ottoman Sandstone Wall ---
-              ctx.fillStyle = '#d4a373';
-              ctx.fillRect(drawStart, -15, drawLen, 35);
-              // Islamic Geometric Pattern
-              ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1.5;
-              const step = 15;
-              const sIdx = Math.floor(drawStart / step);
-              const eIdx = Math.ceil(drawEnd / step);
-              for(let i = sIdx; i <= eIdx; i++) {
-                ctx.save(); ctx.translate(i*step, 5); ctx.rotate(Math.PI/4); ctx.strokeRect(-4, -4, 8, 8); ctx.restore();
-              }
-              // Battlements
-              ctx.fillStyle = '#bc8a5f';
-              const bStep = 20;
-              const bsIdx = Math.floor(drawStart / bStep);
-              const beIdx = Math.ceil(drawEnd / bStep);
-              for(let i = bsIdx; i < beIdx; i++) {
-                ctx.fillRect(i*bStep + 3, -25, 14, 10);
-              }
-            }
-            
-            // Faction Accent (Always centered)
-            ctx.fillStyle = t.color;
-            ctx.fillRect(-10, 5, 20, 5);
-
-            // DRAW JOINTS FOR PERPENDICULAR CORNERS (Bridge the 20px gap)
-            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Back to world space
-            const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
-            const thickness = renderEmpireId === 'fim' ? 36 : 30;
-            const halfThick = thickness / 2;
-
-            if (isH) {
-              if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-halfThick, -35, thickness, 20); // Bridge Up (15 to 35)
-              }
-              if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-halfThick, 15, thickness, 20); // Bridge Down (15 to 35)
-              }
-            } else {
-              if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-35, -halfThick, 20, thickness); // Bridge Left
-              }
-              if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(15, -halfThick, 20, thickness); // Bridge Right
-              }
-            }
-            ctx.rotate((t.rotation || 0) * Math.PI / 180); // Restore rotation for HUD
-
-            // Health Bar (Wall) - Fixed clamping and added Shield Icon
-            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate for HUD
-            const maxHp = (t.type === 'tower') ? TOWER_MAX_HP : (t.type === 'gate' ? GATE_MAX_HP : WALL_MAX_HP);
-            if (t.hp < maxHp - 0.01) { // Show immediately after first hit
-              const bWidth = 50;
-              const hRatio = Math.max(0, Math.min(1, t.hp / maxHp));
-              const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-              ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-25, -45, bWidth, 6);
-              ctx.fillStyle = '#ef4444'; ctx.fillRect(-25, -45, bWidth, 6);
-              ctx.fillStyle = '#22c55e'; ctx.fillRect(-25, -45, clampedW, 6);
-              
-              // HP TEXT (e.g. "9 / 10")
-              ctx.font = 'bold 12px Inter, sans-serif';
-              ctx.fillStyle = '#ffffff';
-              ctx.textAlign = 'center';
-              ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-              ctx.fillText(`${Math.ceil(t.hp)} / ${maxHp}`, 0, -55);
-              ctx.shadowBlur = 0;
-
-              ctx.font = '10px Inter';
-              ctx.textAlign = 'right';
-              ctx.fillText('🛡️', -28, -40);
-            }
-            ctx.rotate((t.rotation || 0) * Math.PI / 180); // Re-rotate for cracks
-
-            // Cracked Texture (Wall)
-            if (t.hp <= 20) {
-              ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)'; ctx.lineWidth = 2;
-              ctx.beginPath(); ctx.moveTo(-20, -10); ctx.lineTo(-10, 5); ctx.lineTo(0, -5); ctx.stroke();
-              ctx.beginPath(); ctx.moveTo(10, 5); ctx.lineTo(20, -10); ctx.stroke();
-            }
-        } else if (t.type === 'gate') {
-            const gx = Math.round(t.pos.x / GRID_SIZE);
-            const gy = Math.round(t.pos.y / GRID_SIZE);
-            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
-            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
-            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
-            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
-
-            if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
-            
-            if (renderEmpireId === 'rim') {
-              // --- Russian Log Gate (Теремные Ворота) ---
-              // Massive Side Pillars (Logs)
-              ctx.fillStyle = '#3e2723';
-              ctx.fillRect(-35, -25, 12, 50); // Left log
-              ctx.fillRect(23, -25, 12, 50);  // Right log
-              
-              // Roof (Upper beam)
-              ctx.fillStyle = '#2b1d1a';
-              ctx.beginPath();
-              ctx.moveTo(-38, -25); ctx.lineTo(0, -40); ctx.lineTo(38, -25); ctx.lineTo(38, -18); ctx.lineTo(-38, -18);
-              ctx.fill();
-
-              if (t.isOpen) {
-                  ctx.fillStyle = '#1a1a1a';
-                  ctx.fillRect(-23, -20, 46, 40);
-              } else {
-                  ctx.fillStyle = '#4e342e';
-                  ctx.fillRect(-23, -20, 46, 40);
-                  // Planks
-                  ctx.strokeStyle = '#2b1d1a'; ctx.lineWidth = 2;
-                  for(let i=-18; i<=18; i+=6) {
-                    ctx.beginPath(); ctx.moveTo(i, -20); ctx.lineTo(i, 20); ctx.stroke();
-                  }
-              }
-            } else if (renderEmpireId === 'fim') {
-              // --- French Portcullis (Iron Grating) ---
-              ctx.fillStyle = '#64748b';
-              ctx.fillRect(-45, -25, 90, 50);
-              
-              if (t.isOpen) {
-                  ctx.fillStyle = '#0f172a';
-                  ctx.fillRect(-35, -20, 70, 40);
-              } else {
-                  ctx.fillStyle = '#334155';
-                  ctx.fillRect(-35, -20, 70, 40);
-                  // Iron Grids
-                  ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2;
-                  for(let i=-30; i<=30; i+=10) {
-                    ctx.beginPath(); ctx.moveTo(i, -20); ctx.lineTo(i, 20); ctx.stroke();
-                  }
-                  for(let j=-15; j<=15; j+=10) {
-                    ctx.beginPath(); ctx.moveTo(-35, j); ctx.lineTo(35, j); ctx.stroke();
-                  }
-              }
-            } else {
-              // --- Ottoman Gate (Golden Details) ---
-              ctx.fillStyle = '#bc8a5f';
-              ctx.fillRect(-50, -25, 100, 50);
-              
-              if (t.isOpen) {
-                  ctx.fillStyle = '#1a1a1a';
-                  ctx.fillRect(-40, -20, 80, 40);
-              } else {
-                  ctx.fillStyle = '#d4a373';
-                  ctx.fillRect(-40, -20, 80, 40);
-                  // Arch detail
-                  ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3;
-                  ctx.beginPath(); ctx.arc(0, 0, 15, Math.PI, 0); ctx.stroke();
-              }
-            }
-
-            // Interaction Hint (Press F to Open/Close) - Only for owner
-            if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && (t.ownerId === myId || t.color === playerRef.current?.color || t.faction === playerRef.current?.color)) {
-                const dist = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-                if (dist < 150) {
-                    const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-                    ctx.save();
-                    ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate to draw text horizontally
-                    
-                    // Bubble background
-                    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-                    ctx.beginPath();
-                    ctx.rect(-50, -65, 100, 24);
-                    ctx.fill();
-                    ctx.strokeStyle = '#fbbf24';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-
-                    ctx.fillStyle = '#fbbf24';
-                    ctx.font = 'bold 10px Inter, sans-serif';
-                    ctx.textAlign = 'center';
-                    const actionTxt = isMobile ? 'TAP TO ' + (t.isOpen ? 'CLOSE' : 'OPEN') : 'F : ' + (t.isOpen ? 'CLOSE' : 'OPEN');
-                    ctx.fillText(actionTxt, 0, -49);
-                    ctx.restore();
-                }
-            }
-        } else if (t.type === 'tower') {
-            ctx.rotate((t.rotation || 0) * Math.PI / 180);
-            
-            if (renderEmpireId === 'rim') {
-              // --- Russian Boyar Tower (Wooden & Conical) ---
-              ctx.fillStyle = '#3e2723';
-              ctx.beginPath();
-              ctx.moveTo(-45, 45); ctx.lineTo(45, 45);
-              ctx.lineTo(35, -35); ctx.lineTo(-35, -35);
-              ctx.fill();
-              // Roof
-              ctx.fillStyle = '#1b5e20';
-              ctx.beginPath();
-              ctx.moveTo(-50, -35); ctx.lineTo(50, -35);
-              ctx.lineTo(0, -85);
-              ctx.fill();
-            } else if (renderEmpireId === 'fim') {
-              // --- French Keep (Stone & Blue Roof) ---
-              ctx.fillStyle = '#94a3b8';
-              ctx.fillRect(-40, -40, 80, 80);
-              ctx.strokeStyle = '#475569'; ctx.lineWidth = 4;
-              ctx.strokeRect(-40, -40, 80, 80);
-              // Blue Spired Roof
-              ctx.fillStyle = '#1e40af';
-              ctx.beginPath();
-              ctx.moveTo(-45, -45); ctx.lineTo(45, -45);
-              ctx.lineTo(0, -95);
-              ctx.fill();
-            } else {
-              // Default Ottoman Tower
-              ctx.fillStyle = '#78350f';
-              ctx.fillRect(-40, -40, 80, 80);
-              ctx.fillStyle = '#92400e';
-              ctx.fillRect(-35, -35, 70, 70);
-              // Roof
-              ctx.fillStyle = '#451a03';
-              ctx.beginPath();
-              ctx.moveTo(-45, -45); ctx.lineTo(45, -45);
-              ctx.lineTo(0, -90);
-              ctx.fill();
-            }
-            
-            // Faction Banner on top
-            ctx.fillStyle = t.color;
-            ctx.fillRect(-10, -30, 20, 10);
-            
-            // Interaction Hint (Press F to Open/Close) - Only for owner
-            if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && (t.ownerId === myId || t.color === playerRef.current?.color || t.faction === playerRef.current?.color)) {
-                const dist = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-                if (dist < 150) {
-                    const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-                    ctx.save();
-                    ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate to draw text horizontally
-                    
-                    // Bubble background
-                    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-                    ctx.beginPath();
-                    ctx.rect(-50, -115, 100, 24);
-                    ctx.fill();
-                    ctx.strokeStyle = '#fbbf24';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-
-                    ctx.fillStyle = '#fbbf24';
-                    ctx.font = 'bold 10px Inter, sans-serif';
-                    ctx.textAlign = 'center';
-                    const actionTxt = isMobile ? 'TAP TO OPEN' : 'F : OPEN';
-                    ctx.fillText(actionTxt, 0, -99);
-                    ctx.restore();
-                }
-            }
-        }
-        
-        // HP Bar (Universal for Towers/Gates)
-        if (t.type !== 'wall' && t.hp < t.maxHp) {
-            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Ensure HP bar is horizontal
-            const barW = 60, barH = 6;
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            ctx.fillRect(-barW/2, 50, barW, barH);
-            ctx.fillStyle = t.hp / t.maxHp > 0.3 ? '#22c55e' : '#ef4444';
-            ctx.fillRect(-barW/2, 50, barW * (t.hp / t.maxHp), barH);
-        }
-        ctx.restore();
-      };
-
       // 1. Clear Canvas & Draw the "Out of Bounds" Void
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, w, h);
@@ -5508,435 +5122,32 @@ const drawTunnel = (t: any, localHeadPos: any, VISION_RADIUS: number, myId: stri
       });
 
       // Obstacles (Base layer)
-      gameMapRef.current.obstacles.forEach(drawObstacle);
+      gameMapRef.current.obstacles.forEach(obstacle => {
+        GameRenderer.drawObstacle(ctx, obstacle, isPointInView);
+      });
 
       // Tunnels (Separate from buildings)
-      tunnelsRef.current.forEach(t => drawTunnel(t, localHeadPos, VISION_RADIUS, myId));
+      tunnelsRef.current.forEach(tunnel => {
+        GameRenderer.drawTunnel(ctx, tunnel, {
+          isPointInView,
+          localHeadPos,
+          visionRadius: VISION_RADIUS,
+          myId,
+          isSpectator: isSpectatorRef.current
+        });
+      });
 
-      towersRef.current.forEach(t => {
-        // --- DATA SAFETY CHECK (v2.9.3) ---
-        if (!t) return;
-        const tx = t.pos?.x !== undefined ? t.pos.x : t.x;
-        const ty = t.pos?.y !== undefined ? t.pos.y : t.y;
-        
-        if (tx === undefined || ty === undefined) {
-          console.warn("Faulty object (tower):", t);
-          return;
-        }
-
-        if (!isPointInView(tx, ty, 150)) return;
-        
-        const p = playerRef.current;
-
-        // NEW: Layer Isolation for buildings
-        // If underground, hide walls/gates/towers.
-        if (p?.isUnderground) return;
-
-        // Fog of War: Hide enemy buildings if too far (unless spectator)
-        if (!isSpectatorRef.current && localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined) {
-          const d = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-          if (d > VISION_RADIUS && t.ownerId !== myId) return;
-        }
-
-        ctx.save();
-        ctx.translate(tx, ty);
-        
-        // Auto-detect empire style if missing or neutral (rendering safety)
-        let renderEmpireId = t.empireId;
-        if (!renderEmpireId || renderEmpireId === 'neutral') {
-          const owner = entitiesRef.current.find(e => e.id === t.ownerId || e.color === t.color);
-          if (owner) renderEmpireId = owner.empireId;
-        }
-
-        if (t.type === 'wall') {
-            const gx = Math.round(t.pos.x / GRID_SIZE);
-            const gy = Math.round(t.pos.y / GRID_SIZE);
-            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
-            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
-            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
-            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
-
-            if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
-
-            const isH = (t.rotation || 0) === 0;
-            const hasPrev = isH ? (n_l && (n_l.type==='wall' || n_l.type==='gate')) : (n_t && (n_t.type==='wall' || n_t.type==='gate'));
-            const hasNext = isH ? (n_r && (n_r.type==='wall' || n_r.type==='gate')) : (n_b && (n_b.type==='wall' || n_b.type==='gate'));
-
-            // Exact boundaries: 35 is grid edge, 55 is overlap into neighbor
-            const drawStart = hasPrev ? -55 : -35;
-            const drawEnd = hasNext ? 55 : 35;
-            const drawLen = drawEnd - drawStart;
-
-            if (renderEmpireId === 'rim') {
-              // --- Russian Palisade (Засека) ---
-              ctx.fillStyle = '#4e342e';
-              ctx.fillRect(drawStart, -15, drawLen, 30);
-              
-              // Log Pattern
-              ctx.fillStyle = '#5d4037';
-              const logWidth = 10;
-              const startLog = Math.floor(drawStart / logWidth);
-              const endLog = Math.ceil(drawEnd / logWidth);
-              for(let i = startLog; i < endLog; i++) {
-                const x = i * logWidth;
-                const h = 20 + Math.sin(i * 1.5) * 5;
-                ctx.beginPath();
-                ctx.moveTo(x + 1, -15);
-                ctx.lineTo(x + 5, -15 - h);
-                ctx.lineTo(x + 9, -15);
-                ctx.fill();
-              }
-              // Iron Reinforcement Bands
-              ctx.fillStyle = '#334155';
-              ctx.fillRect(drawStart, -5, drawLen, 4);
-              ctx.fillRect(drawStart, 10, drawLen, 4);
-            } else if (renderEmpireId === 'fim') {
-              // --- French Bastion Wall (Stone & Iron) ---
-              ctx.fillStyle = '#cbd5e1';
-              ctx.fillRect(drawStart, -18, drawLen, 36);
-              // Stone texture (repeating every 14px)
-              ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
-              const step = 14;
-              const sIdx = Math.floor(drawStart / step);
-              const eIdx = Math.ceil(drawEnd / step);
-              for(let i = sIdx; i <= eIdx; i++) {
-                ctx.beginPath(); ctx.moveTo(i*step, -18); ctx.lineTo(i*step, 18); ctx.stroke();
-              }
-              ctx.beginPath(); ctx.moveTo(drawStart, 0); ctx.lineTo(drawEnd, 0); ctx.stroke();
-              // Golden Top Railing
-              ctx.fillStyle = '#fbbf24';
-              ctx.fillRect(drawStart, -22, drawLen, 4);
-            } else {
-              // --- Ottoman Sandstone Wall ---
-              ctx.fillStyle = '#d4a373';
-              ctx.fillRect(drawStart, -15, drawLen, 35);
-              // Islamic Geometric Pattern
-              ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1.5;
-              const step = 15;
-              const sIdx = Math.floor(drawStart / step);
-              const eIdx = Math.ceil(drawEnd / step);
-              for(let i = sIdx; i <= eIdx; i++) {
-                ctx.save(); ctx.translate(i*step, 5); ctx.rotate(Math.PI/4); ctx.strokeRect(-4, -4, 8, 8); ctx.restore();
-              }
-              // Battlements
-              ctx.fillStyle = '#bc8a5f';
-              const bStep = 20;
-              const bsIdx = Math.floor(drawStart / bStep);
-              const beIdx = Math.ceil(drawEnd / bStep);
-              for(let i = bsIdx; i < beIdx; i++) {
-                ctx.fillRect(i*bStep + 3, -25, 14, 10);
-              }
-            }
-            
-            // Faction Accent (Always centered)
-            ctx.fillStyle = t.color;
-            ctx.fillRect(-10, 5, 20, 5);
-
-            // DRAW JOINTS FOR PERPENDICULAR CORNERS (Bridge the 20px gap)
-            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Back to world space
-            const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
-            const thickness = renderEmpireId === 'fim' ? 36 : 30;
-            const halfThick = thickness / 2;
-
-            if (isH) {
-              if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-halfThick, -35, thickness, 20); // Bridge Up (15 to 35)
-              }
-              if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-halfThick, 15, thickness, 20); // Bridge Down (15 to 35)
-              }
-            } else {
-              if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-35, -halfThick, 20, thickness); // Bridge Left
-              }
-              if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(15, -halfThick, 20, thickness); // Bridge Right
-              }
-            }
-            ctx.rotate((t.rotation || 0) * Math.PI / 180); // Restore rotation for HUD
-
-            // Health Bar (Wall) - Fixed clamping and added Shield Icon
-            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate for HUD
-            const maxHp = (t.type === 'tower') ? TOWER_MAX_HP : (t.type === 'gate' ? GATE_MAX_HP : WALL_MAX_HP);
-            if (t.hp < maxHp - 0.01) { // Show immediately after first hit
-              const bWidth = 50;
-              const hRatio = Math.max(0, Math.min(1, t.hp / maxHp));
-              const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-              ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-25, -45, bWidth, 6);
-              ctx.fillStyle = '#ef4444'; ctx.fillRect(-25, -45, bWidth, 6);
-              ctx.fillStyle = '#22c55e'; ctx.fillRect(-25, -45, clampedW, 6);
-              
-              // HP TEXT (e.g. "9 / 10")
-              ctx.font = 'bold 12px Inter, sans-serif';
-              ctx.fillStyle = '#ffffff';
-              ctx.textAlign = 'center';
-              ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-              ctx.fillText(`${Math.ceil(t.hp)} / ${maxHp}`, 0, -55);
-              ctx.shadowBlur = 0;
-
-              ctx.font = '10px Inter';
-              ctx.textAlign = 'right';
-              ctx.fillText('🛡️', -28, -40);
-            }
-            ctx.rotate((t.rotation || 0) * Math.PI / 180); // Re-rotate for cracks
-
-            // Cracked Texture (Wall)
-            if (t.hp <= 20) {
-              ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)'; ctx.lineWidth = 2;
-              ctx.beginPath(); ctx.moveTo(-20, -10); ctx.lineTo(-10, 5); ctx.lineTo(0, -5); ctx.stroke();
-              ctx.beginPath(); ctx.moveTo(10, 5); ctx.lineTo(20, -10); ctx.stroke();
-            }
-          } else if (t.type === 'gate') {
-            const gx = Math.round(t.pos.x / GRID_SIZE);
-            const gy = Math.round(t.pos.y / GRID_SIZE);
-            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
-            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
-            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
-            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
-
-            if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
-            
-            if (renderEmpireId === 'rim') {
-              // --- Russian Log Gate (Теремные Ворота) ---
-              // Massive Side Pillars (Logs)
-              ctx.fillStyle = '#3e2723';
-              ctx.fillRect(-35, -25, 12, 50); // Left log
-              ctx.fillRect(23, -25, 12, 50);  // Right log
-              
-              // Roof (Upper beam)
-              ctx.fillStyle = '#2b1d1a';
-              ctx.beginPath();
-              ctx.moveTo(-38, -25); ctx.lineTo(0, -40); ctx.lineTo(38, -25); ctx.lineTo(38, -18); ctx.lineTo(-38, -18);
-              ctx.fill();
-
-              if (!t.isOpen) {
-                // Main Door Panel
-                ctx.fillStyle = '#4e342e';
-                ctx.fillRect(-23, -22, 46, 44);
-                
-                // Vertical Log Texture on door
-                ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1;
-                for(let i=-2; i<=2; i++) {
-                  ctx.beginPath(); ctx.moveTo(i*9, -22); ctx.lineTo(i*9, 22); ctx.stroke();
-                }
-
-                // Iron Forged Elements (Decorative Crossbars)
-                ctx.fillStyle = '#1e293b';
-                ctx.fillRect(-23, -10, 46, 3);
-                ctx.fillRect(-23, 10, 46, 3);
-                
-                // Iron Bolts (Rivets)
-                ctx.fillStyle = '#334155';
-                for(let i=-2; i<=2; i++) {
-                  ctx.beginPath(); ctx.arc(i*15, -10, 2, 0, Math.PI*2); ctx.fill();
-                  ctx.beginPath(); ctx.arc(i*15, 10, 2, 0, Math.PI*2); ctx.fill();
-                }
-
-                // Golden Ring Handles
-                ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
-                ctx.beginPath(); ctx.arc(-8, 5, 5, 0, Math.PI*2); ctx.stroke();
-                ctx.beginPath(); ctx.arc(8, 5, 5, 0, Math.PI*2); ctx.stroke();
-              } else {
-                // OPENED: Show hollow passage with depth
-                ctx.save();
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.fillRect(-21, -22, 42, 44);
-                ctx.restore();
-                
-                // Draw inner frame shadows
-                ctx.fillStyle = 'rgba(0,0,0,0.3)';
-                ctx.fillRect(-23, -22, 2, 44);
-                ctx.fillRect(21, -22, 2, 44);
-              }
-            } else if (renderEmpireId === 'fim') {
-              // --- French Iron Gate (Портал) ---
-              // Ornate Stone Pillars with Blue Slate tops
-              ctx.fillStyle = '#94a3b8';
-              ctx.fillRect(-DRAW_LENGTH/2, -25, 14, 50); ctx.fillRect(DRAW_LENGTH/2-14, -25, 14, 50);
-              
-              if (!t.isOpen) {
-                ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2.5;
-                for(let i=-4; i<=4; i++) {
-                  ctx.beginPath(); ctx.moveTo(i*(DRAW_LENGTH/10), -20); ctx.lineTo(i*(DRAW_LENGTH/10), 20); ctx.stroke();
-                }
-              } else {
-                ctx.save();
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.fillRect(-(DRAW_LENGTH-28)/2, -20, DRAW_LENGTH-28, 40);
-                ctx.restore();
-              }
-            } else {
-              // --- Ottoman Stone Arch Gate ---
-              ctx.fillStyle = '#d4a373';
-              ctx.beginPath(); ctx.moveTo(-DRAW_LENGTH/2, 25); ctx.lineTo(-DRAW_LENGTH/2, -15); ctx.quadraticCurveTo(0, -45, DRAW_LENGTH/2, -15); ctx.lineTo(DRAW_LENGTH/2, 25); ctx.fill();
-              
-              if (!t.isOpen) {
-                // CLOSED: Solid Wooden Door with Iron Accents
-                ctx.fillStyle = '#4a2511'; // Dark rich wood
-                ctx.fillRect(-(DRAW_LENGTH-12)/2, -15, DRAW_LENGTH-12, 38);
-                
-                // Iron Bands for reinforcement
-                ctx.fillStyle = '#1e293b'; // Slate dark iron
-                ctx.fillRect(-(DRAW_LENGTH-12)/2, -5, DRAW_LENGTH-12, 3);
-                ctx.fillRect(-(DRAW_LENGTH-12)/2, 10, DRAW_LENGTH-12, 3);
-                
-                // Decorative handle/ring
-                ctx.strokeStyle = '#fbbf24'; // Gold/Brass
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.arc(0, 5, 6, 0, Math.PI * 2);
-                ctx.stroke();
-              } else {
-                ctx.save();
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.beginPath(); ctx.moveTo(-(DRAW_LENGTH-16)/2, 25); ctx.lineTo(-(DRAW_LENGTH-16)/2, -10); ctx.quadraticCurveTo(0, -35, (DRAW_LENGTH-16)/2, -10); ctx.lineTo((DRAW_LENGTH-16)/2, 25); ctx.fill();
-                ctx.restore();
-              }
-            }
-            
-            // DRAW JOINTS FOR GATES TOO (Perfect tile joints)
-            ctx.rotate(-(t.rotation || 0) * Math.PI / 180);
-            const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
-            const jSize = renderEmpireId === 'fim' ? 36 : 30;
-            const halfWall = DRAW_LENGTH / 2;
-            const halfThick = jSize / 2;
-            const offset = GRID_SIZE / 2;
-
-            if (t.rotation === 0) {
-              if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-halfThick, -offset - halfThick, jSize, jSize);
-              }
-              if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-halfThick, offset - halfThick, jSize, jSize);
-              }
-              // Clean L-junction overlaps for gates
-              if (!n_l && (n_t || n_b)) {
-                 ctx.fillStyle = jointColor;
-                 ctx.fillRect(-halfWall, -halfThick, halfWall - halfThick, jSize);
-              }
-              if (!n_r && (n_t || n_b)) {
-                 ctx.fillStyle = jointColor;
-                 ctx.fillRect(halfThick, -halfThick, halfWall - halfThick, jSize);
-              }
-            } else {
-              if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(-offset - halfThick, -halfThick, jSize, jSize);
-              }
-              if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
-                ctx.fillStyle = jointColor;
-                ctx.fillRect(offset - halfThick, -halfThick, jSize, jSize);
-              }
-            }
-            ctx.rotate((t.rotation || 0) * Math.PI / 180);
-            
-            // Faction Banner on top
-            ctx.fillStyle = t.color;
-            ctx.fillRect(-10, -30, 20, 10);
-            
-            // Interaction Hint (Press F to Open/Close) - Only for owner
-            if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && (t.ownerId === myId || t.color === playerRef.current?.color || t.faction === playerRef.current?.color)) {
-                const dist = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-                if (dist < 150) {
-                    const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-                    ctx.save();
-                    ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate to draw text horizontally
-                    
-                    // Bubble background
-                    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-                    ctx.beginPath();
-                    ctx.rect(-45, -85, 90, 24);
-                    ctx.fill();
-                    ctx.strokeStyle = '#fbbf24';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-
-                    if (isMobile) {
-                        ctx.fillStyle = '#fbbf24';
-                        ctx.font = 'bold 10px Inter, sans-serif';
-                        ctx.textAlign = 'center';
-                        ctx.fillText('TAP TO ' + (t.isOpen ? 'CLOSE' : 'OPEN'), 0, -68);
-                    } else {
-                        // Key hint
-                        ctx.fillStyle = '#fbbf24';
-                        ctx.font = 'bold 14px Inter, sans-serif';
-                        ctx.textAlign = 'center';
-                        ctx.fillText('F', -30, -68);
-                        
-                        // Action text
-                        ctx.fillStyle = '#ffffff';
-                        ctx.font = '10px Inter, sans-serif';
-                        ctx.textAlign = 'left';
-                        ctx.fillText(t.isOpen ? 'CLOSE' : 'OPEN', -15, -68);
-                    }
-                    
-                    ctx.restore();
-                }
-            }
-            
-            // Un-rotate for health bar
-            ctx.rotate(-(t.rotation || 0) * Math.PI / 180);
-            const maxHp = (t.type === 'tower') ? TOWER_MAX_HP : (t.type === 'gate' ? GATE_MAX_HP : WALL_MAX_HP);
-            if (t.hp < maxHp - 0.01) {
-              const bWidth = 50;
-              const hRatio = Math.max(0, Math.min(1, t.hp / maxHp));
-              const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-              ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-25, -45, bWidth, 6);
-              ctx.fillStyle = '#ef4444'; ctx.fillRect(-25, -45, bWidth, 6);
-              ctx.fillStyle = '#22c55e'; ctx.fillRect(-25, -45, clampedW, 6);
-              
-              // HP TEXT (e.g. "9 / 10")
-              ctx.font = 'bold 12px Inter, sans-serif';
-              ctx.fillStyle = '#ffffff';
-              ctx.textAlign = 'center';
-              ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-              ctx.fillText(`${Math.ceil(t.hp)} / ${maxHp}`, 0, -55);
-              ctx.shadowBlur = 0;
-
-              ctx.font = '10px Inter';
-              ctx.textAlign = 'right';
-              ctx.fillText('🛡️', -28, -40);
-            }
-          } else if (t.type === 'tower' || !t.type) {
-            let faction = 'green';
-            if (renderEmpireId === 'rim') faction = 'red';
-            else if (renderEmpireId === 'fim') faction = 'blue';
-
-            const img = (images as any)[`tower_${faction}`];
-            const size = 100;
-            if (img && img.complete && img.naturalWidth !== 0) {
-              ctx.drawImage(img, -size / 2, -size / 2, size, size);
-            }
-
-            // Health Bar (Tower) - Fixed clamping and added Shield Icon
-            if (t.hp < TOWER_MAX_HP - 0.01) {
-              const bWidth = 60;
-              const hRatio = Math.max(0, Math.min(1, t.hp / TOWER_MAX_HP));
-              const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-              ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-30, -155, bWidth, 7);
-              ctx.fillStyle = '#ef4444'; ctx.fillRect(-30, -155, bWidth, 7);
-              ctx.fillStyle = '#22c55e'; ctx.fillRect(-30, -155, clampedW, 7);
-              
-              // HP TEXT
-              ctx.font = 'bold 12px Inter, sans-serif';
-              ctx.fillStyle = '#ffffff';
-              ctx.textAlign = 'center';
-              ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-              ctx.fillText(`${Math.ceil(t.hp)} / ${TOWER_MAX_HP}`, 0, -165);
-              ctx.shadowBlur = 0;
-
-              ctx.font = '12px Inter';
-              ctx.textAlign = 'right';
-              ctx.fillText('🛡️', -35, -148);
-            }
-          }
-          ctx.restore();
+      towersRef.current.forEach(building => {
+        GameRenderer.drawBuilding(ctx, building, {
+          isPointInView,
+          localHeadPos,
+          visionRadius: VISION_RADIUS,
+          myId,
+          isSpectator: isSpectatorRef.current,
+          currentPlayer: playerRef.current,
+          entities: entitiesRef.current,
+          buildingMap: buildingMapRef.current
+        });
       });
       projectilesRef.current.forEach(pr => {
         if (!pr || !pr.pos) return;
@@ -7807,5 +7018,499 @@ const drawTunnel = (t: any, localHeadPos: any, VISION_RADIUS: number, myId: stri
       )}
     </div>
   );
+};
+
+type RenderViewCheck = (x: number, y: number, padding?: number) => boolean;
+
+interface TunnelRenderState {
+  isPointInView: RenderViewCheck;
+  localHeadPos: Vector | null;
+  visionRadius: number;
+  myId: string;
+  isSpectator: boolean;
+}
+
+interface BuildingRenderState extends TunnelRenderState {
+  currentPlayer: Entity | null;
+  entities: Entity[];
+  buildingMap: Map<string, Tower>;
+}
+
+const GameRenderer = {
+  drawObstacle(ctx: CanvasRenderingContext2D, obstacle: Obstacle, isPointInView: RenderViewCheck) {
+    if (!obstacle?.center) return;
+    if (!isPointInView(obstacle.center.x, obstacle.center.y, obstacle.radius + 150)) return;
+
+    ctx.save();
+    if (obstacle.type === 'grass') {
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = '#166534';
+      ctx.beginPath();
+      ctx.arc(obstacle.center.x, obstacle.center.y, obstacle.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    } else if ((obstacle as any).type === 'stone') {
+      ctx.fillStyle = '#4b5563';
+      ctx.beginPath();
+      ctx.arc(obstacle.center.x, obstacle.center.y, obstacle.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#1f2937';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+
+  drawTunnel(ctx: CanvasRenderingContext2D, tunnel: any, renderState: TunnelRenderState) {
+    if (!tunnel?.pos) return;
+    const tx = tunnel.pos.x;
+    const ty = tunnel.pos.y;
+    if (!renderState.isPointInView(tx, ty, 100)) return;
+    if (!renderState.isSpectator && renderState.localHeadPos) {
+      const distance = getDistanceXY(renderState.localHeadPos.x, renderState.localHeadPos.y, tx, ty);
+      if (distance > renderState.visionRadius && tunnel.ownerId !== renderState.myId) return;
+    }
+
+    ctx.save();
+    ctx.translate(tx, ty);
+    const size = 100;
+    if (images.pit && images.pit.complete && images.pit.naturalWidth !== 0) {
+      ctx.drawImage(images.pit, -size / 2, -size / 2, size, size);
+    } else {
+      ctx.fillStyle = '#5d4037';
+      ctx.beginPath();
+      ctx.arc(0, 0, 45, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000000';
+      ctx.beginPath();
+      ctx.arc(0, 0, 30, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  },
+
+  drawBuilding(ctx: CanvasRenderingContext2D, building: Tower, renderState: BuildingRenderState) {
+    if (!building) return;
+    const tx = building.pos?.x ?? (building as any).x;
+    const ty = building.pos?.y ?? (building as any).y;
+    if (tx === undefined || ty === undefined) return;
+    if (!renderState.isPointInView(tx, ty, 150)) return;
+    if (renderState.currentPlayer?.isUnderground) return;
+
+    if (!renderState.isSpectator && renderState.localHeadPos) {
+      const distance = getDistanceXY(renderState.localHeadPos.x, renderState.localHeadPos.y, tx, ty);
+      if (distance > renderState.visionRadius && building.ownerId !== renderState.myId) return;
+    }
+
+    ctx.save();
+    ctx.translate(tx, ty);
+
+    let renderEmpireId: EmpireType | 'neutral' | undefined = building.empireId;
+    if (!renderEmpireId || renderEmpireId === 'neutral') {
+      const owner = renderState.entities.find(entity => entity.id === building.ownerId || entity.color === building.color);
+      if (owner) renderEmpireId = owner.empireId;
+    }
+
+    if (building.type === 'wall') {
+      const gx = Math.round(building.pos.x / GRID_SIZE);
+      const gy = Math.round(building.pos.y / GRID_SIZE);
+      const n_t = renderState.buildingMap.get(`${gx}_${gy - 1}`);
+      const n_b = renderState.buildingMap.get(`${gx}_${gy + 1}`);
+      const n_l = renderState.buildingMap.get(`${gx - 1}_${gy}`);
+      const n_r = renderState.buildingMap.get(`${gx + 1}_${gy}`);
+
+      if (building.rotation) ctx.rotate(building.rotation * Math.PI / 180);
+
+      const isHorizontal = (building.rotation || 0) === 0;
+      const hasPrev = isHorizontal ? (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) : (n_t && (n_t.type === 'wall' || n_t.type === 'gate'));
+      const hasNext = isHorizontal ? (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) : (n_b && (n_b.type === 'wall' || n_b.type === 'gate'));
+      const drawStart = hasPrev ? -55 : -35;
+      const drawEnd = hasNext ? 55 : 35;
+      const drawLen = drawEnd - drawStart;
+
+      if (renderEmpireId === 'rim') {
+        ctx.fillStyle = '#4e342e';
+        ctx.fillRect(drawStart, -15, drawLen, 30);
+        ctx.fillStyle = '#5d4037';
+        const logWidth = 10;
+        const startLog = Math.floor(drawStart / logWidth);
+        const endLog = Math.ceil(drawEnd / logWidth);
+        for (let i = startLog; i < endLog; i++) {
+          const x = i * logWidth;
+          const h = 20 + Math.sin(i * 1.5) * 5;
+          ctx.beginPath();
+          ctx.moveTo(x + 1, -15);
+          ctx.lineTo(x + 5, -15 - h);
+          ctx.lineTo(x + 9, -15);
+          ctx.fill();
+        }
+        ctx.fillStyle = '#334155';
+        ctx.fillRect(drawStart, -5, drawLen, 4);
+        ctx.fillRect(drawStart, 10, drawLen, 4);
+      } else if (renderEmpireId === 'fim') {
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(drawStart, -18, drawLen, 36);
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 1;
+        const step = 14;
+        const sIdx = Math.floor(drawStart / step);
+        const eIdx = Math.ceil(drawEnd / step);
+        for (let i = sIdx; i <= eIdx; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * step, -18);
+          ctx.lineTo(i * step, 18);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.moveTo(drawStart, 0);
+        ctx.lineTo(drawEnd, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(drawStart, -22, drawLen, 4);
+      } else {
+        ctx.fillStyle = '#d4a373';
+        ctx.fillRect(drawStart, -15, drawLen, 35);
+        ctx.strokeStyle = '#bc8a5f';
+        ctx.lineWidth = 1.5;
+        const step = 15;
+        const sIdx = Math.floor(drawStart / step);
+        const eIdx = Math.ceil(drawEnd / step);
+        for (let i = sIdx; i <= eIdx; i++) {
+          ctx.save();
+          ctx.translate(i * step, 5);
+          ctx.rotate(Math.PI / 4);
+          ctx.strokeRect(-4, -4, 8, 8);
+          ctx.restore();
+        }
+        ctx.fillStyle = '#bc8a5f';
+        const battlementStep = 20;
+        const battlementStart = Math.floor(drawStart / battlementStep);
+        const battlementEnd = Math.ceil(drawEnd / battlementStep);
+        for (let i = battlementStart; i < battlementEnd; i++) {
+          ctx.fillRect(i * battlementStep + 3, -25, 14, 10);
+        }
+      }
+
+      ctx.fillStyle = building.color;
+      ctx.fillRect(-10, 5, 20, 5);
+
+      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
+      const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
+      const thickness = renderEmpireId === 'fim' ? 36 : 30;
+      const halfThick = thickness / 2;
+
+      if (isHorizontal) {
+        if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(-halfThick, -35, thickness, 20);
+        }
+        if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(-halfThick, 15, thickness, 20);
+        }
+      } else {
+        if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(-35, -halfThick, 20, thickness);
+        }
+        if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(15, -halfThick, 20, thickness);
+        }
+      }
+      ctx.rotate((building.rotation || 0) * Math.PI / 180);
+
+      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
+      const maxHp = WALL_MAX_HP;
+      if (building.hp < maxHp - 0.01) {
+        const bWidth = 50;
+        const hRatio = Math.max(0, Math.min(1, building.hp / maxHp));
+        const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(-25, -45, bWidth, 6);
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(-25, -45, bWidth, 6);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(-25, -45, clampedW, 6);
+        ctx.font = 'bold 12px Inter, sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = 'black';
+        ctx.fillText(`${Math.ceil(building.hp)} / ${maxHp}`, 0, -55);
+        ctx.shadowBlur = 0;
+        ctx.font = '10px Inter';
+        ctx.textAlign = 'right';
+        ctx.fillText('🛡️', -28, -40);
+      }
+      ctx.rotate((building.rotation || 0) * Math.PI / 180);
+
+      if (building.hp <= 20) {
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-20, -10);
+        ctx.lineTo(-10, 5);
+        ctx.lineTo(0, -5);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(10, 5);
+        ctx.lineTo(20, -10);
+        ctx.stroke();
+      }
+    } else if (building.type === 'gate') {
+      const gx = Math.round(building.pos.x / GRID_SIZE);
+      const gy = Math.round(building.pos.y / GRID_SIZE);
+      const n_t = renderState.buildingMap.get(`${gx}_${gy - 1}`);
+      const n_b = renderState.buildingMap.get(`${gx}_${gy + 1}`);
+      const n_l = renderState.buildingMap.get(`${gx - 1}_${gy}`);
+      const n_r = renderState.buildingMap.get(`${gx + 1}_${gy}`);
+
+      if (building.rotation) ctx.rotate(building.rotation * Math.PI / 180);
+
+      if (renderEmpireId === 'rim') {
+        ctx.fillStyle = '#3e2723';
+        ctx.fillRect(-35, -25, 12, 50);
+        ctx.fillRect(23, -25, 12, 50);
+        ctx.fillStyle = '#2b1d1a';
+        ctx.beginPath();
+        ctx.moveTo(-38, -25);
+        ctx.lineTo(0, -40);
+        ctx.lineTo(38, -25);
+        ctx.lineTo(38, -18);
+        ctx.lineTo(-38, -18);
+        ctx.fill();
+
+        if (!building.isOpen) {
+          ctx.fillStyle = '#4e342e';
+          ctx.fillRect(-23, -22, 46, 44);
+          ctx.strokeStyle = '#3e2723';
+          ctx.lineWidth = 1;
+          for (let i = -2; i <= 2; i++) {
+            ctx.beginPath();
+            ctx.moveTo(i * 9, -22);
+            ctx.lineTo(i * 9, 22);
+            ctx.stroke();
+          }
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(-23, -10, 46, 3);
+          ctx.fillRect(-23, 10, 46, 3);
+          ctx.fillStyle = '#334155';
+          for (let i = -2; i <= 2; i++) {
+            ctx.beginPath();
+            ctx.arc(i * 15, -10, 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(i * 15, 10, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.strokeStyle = '#fbbf24';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(-8, 5, 5, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(8, 5, 5, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          ctx.save();
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.fillRect(-21, -22, 42, 44);
+          ctx.restore();
+          ctx.fillStyle = 'rgba(0,0,0,0.3)';
+          ctx.fillRect(-23, -22, 2, 44);
+          ctx.fillRect(21, -22, 2, 44);
+        }
+      } else if (renderEmpireId === 'fim') {
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillRect(-DRAW_LENGTH / 2, -25, 14, 50);
+        ctx.fillRect(DRAW_LENGTH / 2 - 14, -25, 14, 50);
+        if (!building.isOpen) {
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 2.5;
+          for (let i = -4; i <= 4; i++) {
+            ctx.beginPath();
+            ctx.moveTo(i * (DRAW_LENGTH / 10), -20);
+            ctx.lineTo(i * (DRAW_LENGTH / 10), 20);
+            ctx.stroke();
+          }
+        } else {
+          ctx.save();
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.fillRect(-(DRAW_LENGTH - 28) / 2, -20, DRAW_LENGTH - 28, 40);
+          ctx.restore();
+        }
+      } else {
+        ctx.fillStyle = '#d4a373';
+        ctx.beginPath();
+        ctx.moveTo(-DRAW_LENGTH / 2, 25);
+        ctx.lineTo(-DRAW_LENGTH / 2, -15);
+        ctx.quadraticCurveTo(0, -45, DRAW_LENGTH / 2, -15);
+        ctx.lineTo(DRAW_LENGTH / 2, 25);
+        ctx.fill();
+        if (!building.isOpen) {
+          ctx.fillStyle = '#4a2511';
+          ctx.fillRect(-(DRAW_LENGTH - 12) / 2, -15, DRAW_LENGTH - 12, 38);
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(-(DRAW_LENGTH - 12) / 2, -5, DRAW_LENGTH - 12, 3);
+          ctx.fillRect(-(DRAW_LENGTH - 12) / 2, 10, DRAW_LENGTH - 12, 3);
+          ctx.strokeStyle = '#fbbf24';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(0, 5, 6, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          ctx.save();
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.beginPath();
+          ctx.moveTo(-(DRAW_LENGTH - 16) / 2, 25);
+          ctx.lineTo(-(DRAW_LENGTH - 16) / 2, -10);
+          ctx.quadraticCurveTo(0, -35, (DRAW_LENGTH - 16) / 2, -10);
+          ctx.lineTo((DRAW_LENGTH - 16) / 2, 25);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
+      const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
+      const jSize = renderEmpireId === 'fim' ? 36 : 30;
+      const halfWall = DRAW_LENGTH / 2;
+      const halfThick = jSize / 2;
+      const offset = GRID_SIZE / 2;
+
+      if ((building.rotation || 0) === 0) {
+        if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(-halfThick, -offset - halfThick, jSize, jSize);
+        }
+        if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(-halfThick, offset - halfThick, jSize, jSize);
+        }
+        if (!n_l && (n_t || n_b)) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(-halfWall, -halfThick, halfWall - halfThick, jSize);
+        }
+        if (!n_r && (n_t || n_b)) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(halfThick, -halfThick, halfWall - halfThick, jSize);
+        }
+      } else {
+        if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(-offset - halfThick, -halfThick, jSize, jSize);
+        }
+        if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
+          ctx.fillStyle = jointColor;
+          ctx.fillRect(offset - halfThick, -halfThick, jSize, jSize);
+        }
+      }
+      ctx.rotate((building.rotation || 0) * Math.PI / 180);
+
+      ctx.fillStyle = building.color;
+      ctx.fillRect(-10, -30, 20, 10);
+
+      if (renderState.localHeadPos && (building.ownerId === renderState.myId || building.color === renderState.currentPlayer?.color || building.faction === renderState.currentPlayer?.color)) {
+        const distance = getDistanceXY(renderState.localHeadPos.x, renderState.localHeadPos.y, tx, ty);
+        if (distance < 150) {
+          const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+          ctx.save();
+          ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
+          ctx.fillStyle = 'rgba(0,0,0,0.8)';
+          ctx.beginPath();
+          ctx.rect(-45, -85, 90, 24);
+          ctx.fill();
+          ctx.strokeStyle = '#fbbf24';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          if (isMobile) {
+            ctx.fillStyle = '#fbbf24';
+            ctx.font = 'bold 10px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('TAP TO ' + (building.isOpen ? 'CLOSE' : 'OPEN'), 0, -68);
+          } else {
+            ctx.fillStyle = '#fbbf24';
+            ctx.font = 'bold 14px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('F', -30, -68);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '10px Inter, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillText(building.isOpen ? 'CLOSE' : 'OPEN', -15, -68);
+          }
+          ctx.restore();
+        }
+      }
+
+      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
+      const maxHp = GATE_MAX_HP;
+      if (building.hp < maxHp - 0.01) {
+        const bWidth = 50;
+        const hRatio = Math.max(0, Math.min(1, building.hp / maxHp));
+        const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(-25, -45, bWidth, 6);
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(-25, -45, bWidth, 6);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(-25, -45, clampedW, 6);
+        ctx.font = 'bold 12px Inter, sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = 'black';
+        ctx.fillText(`${Math.ceil(building.hp)} / ${maxHp}`, 0, -55);
+        ctx.shadowBlur = 0;
+        ctx.font = '10px Inter';
+        ctx.textAlign = 'right';
+        ctx.fillText('🛡️', -28, -40);
+      }
+    } else if (building.type === 'tower' || !building.type) {
+      let faction = 'green';
+      if (renderEmpireId === 'rim') faction = 'red';
+      else if (renderEmpireId === 'fim') faction = 'blue';
+
+      const img = (images as any)[`tower_${faction}`];
+      const size = 100;
+      if (img && img.complete && img.naturalWidth !== 0) {
+        ctx.drawImage(img, -size / 2, -size / 2, size, size);
+      }
+
+      if (building.hp < TOWER_MAX_HP - 0.01) {
+        const bWidth = 60;
+        const hRatio = Math.max(0, Math.min(1, building.hp / TOWER_MAX_HP));
+        const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(-30, -155, bWidth, 7);
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(-30, -155, bWidth, 7);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(-30, -155, clampedW, 7);
+        ctx.font = 'bold 12px Inter, sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = 'black';
+        ctx.fillText(`${Math.ceil(building.hp)} / ${TOWER_MAX_HP}`, 0, -165);
+        ctx.shadowBlur = 0;
+        ctx.font = '12px Inter';
+        ctx.textAlign = 'right';
+        ctx.fillText('🛡️', -35, -148);
+      }
+    }
+
+    if (building.type !== 'wall' && building.hp < building.maxHp) {
+      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
+      const barW = 60;
+      const barH = 6;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(-barW / 2, 50, barW, barH);
+      ctx.fillStyle = building.hp / building.maxHp > 0.3 ? '#22c55e' : '#ef4444';
+      ctx.fillRect(-barW / 2, 50, barW * (building.hp / building.maxHp), barH);
+    }
+
+    ctx.restore();
+  }
 };
 export default SwarmEngine;
