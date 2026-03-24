@@ -1,24 +1,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Joystick from './Joystick';
 import { Crown, Shield, Sword, Check, ArrowLeft, Users, Zap,
-  WifiOff, RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
+  WifiOff,
+  RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
+import { io, Socket } from 'socket.io-client';
 import { cn } from '../utils/cn';
 
 import { EmpireType } from './SelectionScreen';
 import { Language, translations, EMPIRE_CURRENCIES } from '../utils/i18n';
-
-const images = { 
-   tower_green: new Image(), 
-   tower_red: new Image(), 
-   tower_blue: new Image(), 
-   pit: new Image(), 
-   wall: new Image() 
-}; 
-images.tower_green.src = '/assets/images/tower_green.png'; 
-images.tower_red.src = '/assets/images/tower_red.png'; 
-images.tower_blue.src = '/assets/images/tower_blue.png'; 
-images.pit.src = '/assets/images/pit.png'; 
-images.wall.src = '/assets/images/wall.png';
 
 export let ENGINE_STATE = 'MENU';
 
@@ -31,7 +20,7 @@ interface SwarmEngineProps {
   language: Language;
 }
 
-const SOCKET_URL = 'wss://server-for-sultans-game-production.up.railway.app';
+const SOCKET_URL = (import.meta as any).env?.VITE_SOCKET_URL || 'https://server-for-sultans-game-production.up.railway.app';
 
 const WORLD_SIZE = 4000;
 const LOBBY_WORLD_SIZE = 1200;
@@ -117,7 +106,7 @@ type UnitType = 'infantry' | 'tower' | 'wall' | 'gate';
 
 interface Vector { x: number; y: number; }
 interface Unit { pos: Vector; color: string; id: string; type: UnitType; hp: number; empireId?: EmpireType | 'neutral'; }
-interface Projectile { id: string; ownerId: string; pos: Vector; vel: Vector; life: number; damage: number; color: string; empireId?: EmpireType; targetPos?: Vector; targetId?: string; isReal?: boolean; }
+interface Projectile { id: string; ownerId: string; pos: Vector; vel: Vector; life: number; damage: number; color: string; empireId?: EmpireType; targetPos?: Vector; isReal?: boolean; }
 interface Tower { id: string; ownerId: string; pos: Vector; color: string; hp: number; maxHp: number; lastShot: number; faction?: string; empireId?: EmpireType; type?: 'tower' | 'wall' | 'gate' | 'tunnel'; rotation?: number; isOpen?: boolean; }
 interface Obstacle { id: string; type: 'tree' | 'boulder' | 'grass'; points?: Vector[]; center: Vector; radius: number; color: string; }
 interface Garrison { 
@@ -144,7 +133,6 @@ interface Garrison {
 
 interface Entity { 
   id: string; 
-  shortId?: number; // Для бинарной синхронизации
   name: string; 
   type: 'player' | 'ai'; 
   units: Unit[]; 
@@ -188,158 +176,6 @@ interface TunnelEntrance {
 interface Particle { pos: Vector; vel: Vector; life: number; maxLife: number; color: string; type?: 'dust' | 'slash' | 'tower_dust' | 'ripple' | 'text'; text?: string; }
 
 const getDistance = (v1: Vector, v2: Vector) => Math.sqrt((v1.x - v2.x) ** 2 + (v1.y - v2.y) ** 2);
-const getDistanceXY = (x1: number, y1: number, x2: number, y2: number) => Math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2);
-
-class SocketProxy {
-  ws: WebSocket;
-  id: string = '';
-  connected: boolean = false;
-  listeners: { [key: string]: Function[] } = {};
-  url: string;
-  myShortIdRef: React.MutableRefObject<number | null>;
-  entitiesRef: React.MutableRefObject<Entity[]>;
-  setMyId: (id: string) => void;
-  setLastEvent: (event: string) => void;
-
-  constructor(url: string, myShortIdRef: React.MutableRefObject<number | null>, entitiesRef: React.MutableRefObject<Entity[]>, setMyId: (id: string) => void, setLastEvent: (event: string) => void) {
-    this.url = url;
-    this.myShortIdRef = myShortIdRef;
-    this.entitiesRef = entitiesRef;
-    this.setMyId = setMyId;
-    this.setLastEvent = setLastEvent;
-    
-    // Initial connection (ws needs to be initialized first for type safety if used elsewhere before connect)
-    this.ws = new WebSocket(this.url);
-    this.setupSocket();
-  }
-
-  connect() {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-    this.ws = new WebSocket(this.url);
-    this.setupSocket();
-  }
-
-  private setupSocket() {
-    this.ws.binaryType = 'arraybuffer';
-
-    this.ws.onopen = () => {
-      this.connected = true;
-      this.trigger('connect');
-    };
-
-    this.ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        try {
-          const view = new DataView(event.data);
-          const shortId = view.getUint32(0, true);
-          const x = view.getFloat32(4, true);
-          const y = view.getFloat32(8, true);
-          const rotation = view.getFloat32(12, true);
-          const hp = view.getFloat32(16, true);
-          const unitCount = view.getUint32(20, true);
-          const isUnderground = view.getUint8(24) === 1; // SYNC UNDERGROUND STATE
-
-          const enemy = this.entitiesRef.current.find(e => e && e.shortId === shortId);
-          if (enemy && enemy.id !== this.id) {
-            enemy.targetPos = { x, y };
-            enemy.targetAngle = rotation;
-            enemy.lastUpdate = Date.now();
-            enemy.isUnderground = isUnderground; // SYNC STATE
-            if (enemy.units && enemy.units.length > 0) enemy.units[0].hp = hp;
-            
-            // TOTAL BINARY SYNC: FORCE unitCount and isAlive
-            enemy.score = unitCount; // Update visual score
-            enemy.lastKnownUnitCount = unitCount; // Internal sync count
-
-            if (unitCount === 0) {
-              enemy.isAlive = false;
-              enemy.units = []; 
-            } else {
-              enemy.isAlive = true;
-              // Force physical unit count sync
-              if (enemy.units && enemy.units.length !== unitCount) {
-                 if (enemy.units.length < unitCount) {
-                    const diff = unitCount - enemy.units.length;
-                    for (let i = 0; i < diff; i++) {
-                      enemy.units.push({
-                        id: `remote_${enemy.id}_${Date.now()}_${i}`,
-                        pos: { x: x + (Math.random()-0.5)*50, y: y + (Math.random()-0.5)*50 },
-                        hp: hp,
-                        maxHp: 100,
-                        type: 'soldier',
-                        color: enemy.color
-                      } as any);
-                    }
-                 } else {
-                    enemy.units = enemy.units.slice(0, unitCount);
-                 }
-              }
-            }
-          }
-        } catch (e) {
-          console.error("Binary message error", e);
-        }
-        return;
-      }
-
-      try {
-        const { type, data } = JSON.parse(event.data);
-        if (type === 'set_id') {
-          this.id = data;
-          this.setMyId(data);
-        }
-        this.trigger(type, data);
-        this.setLastEvent(type);
-      } catch (e) {
-        console.error("WS Parse error", e);
-      }
-    };
-
-    this.ws.onclose = () => {
-      this.connected = false;
-      this.trigger('disconnect');
-    };
-
-    this.ws.onerror = (err) => {
-      this.trigger('connect_error', err);
-    };
-  }
-
-  on(event: string, cb: Function) {
-    if (!this.listeners[event]) this.listeners[event] = [];
-    this.listeners[event].push(cb);
-  }
-
-  emit(type: string, data: any) {
-    if (this.ws.readyState === WebSocket.OPEN) {
-      if (type === 'sync_data' && data.x !== undefined && data.y !== undefined) {
-        const buffer = new ArrayBuffer(25);
-        const view = new DataView(buffer);
-        view.setUint32(0, this.myShortIdRef.current || 0, true);
-        view.setFloat32(4, data.x, true);
-        view.setFloat32(8, data.y, true);
-        view.setFloat32(12, data.rotation, true);
-        view.setFloat32(16, data.hp, true);
-        view.setUint32(20, data.unitCount, true);
-        view.setUint8(24, data.isUnderground ? 1 : 0); // NEW: PACK UNDERGROUND STATE
-        this.ws.send(buffer);
-      } else {
-        this.ws.send(JSON.stringify({ type, data }));
-      }
-    }
-  }
-
-  trigger(event: string, data?: any) {
-    if (this.listeners[event]) {
-      this.listeners[event].forEach(cb => cb(data));
-    }
-  }
-
-  close() { this.ws.close(); }
-  disconnect() { this.ws.close(); }
-}
 const generateId = (prefix: string = 'wall') => prefix + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
 
 class SeededRandom {
@@ -635,7 +471,6 @@ interface Room {
 
 interface LobbyPlayer {
   id: string;
-  shortId?: number; // Короткий ID для бинарной синхронизации
   peerId: string;
   name: string;
   isReady: boolean;
@@ -769,22 +604,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
 
   // Networking State
-  const socketProxyRef = useRef<SocketProxy | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
-  const lastEmitTimeRef = useRef({ move_update: 0, tunnel_update: 0 });
   const lastUIUpdateTimeRef = useRef<number>(0); // NEW: Throttle React state updates
   const [isHost, setIsHost] = useState(false);
   const isHostRef = useRef(false); // NEW: Reliable host ref
   const [myId, setMyId] = useState('');
-  const myShortIdRef = useRef<number | null>(null); // Короткий ID для бинарной синхронизации
   const myIdRef = useRef(''); // Ref for myId to avoid closure issues
   useEffect(() => { myIdRef.current = myId; }, [myId]); // Sync ref
-  const canEmitNetworkEvent = useCallback((eventType: 'move_update' | 'tunnel_update') => {
-    const now = Date.now();
-    if (now - lastEmitTimeRef.current[eventType] <= 50) return false;
-    lastEmitTimeRef.current[eventType] = now;
-    return true;
-  }, []);
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const currentRoomRef = useRef<Room | null>(null);
@@ -856,7 +683,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // Add or Update players
     players.forEach(p => {
-      const myIdVal = socketProxyRef.current?.id || myId;
+      const myIdVal = socketRef.current?.id || myId;
       if (p.id === myIdVal) return;
       
       const cached = playerSkinsRef.current.get(p.id);
@@ -867,7 +694,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       if (!remotePlayersRef.current.has(p.id)) {
         const newEnt: Entity = {
           id: p.id,
-          shortId: p.shortId, // Присваиваем короткий ID
           name: playerName,
           type: 'player',
           units: [{ pos: { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 }, color: factionColor, id: p.id + '_0', type: 'infantry', hp: 500 }],
@@ -899,10 +725,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   }, [myId]);
 
   useEffect(() => {
-    const socket = new SocketProxy(SOCKET_URL, myShortIdRef, entitiesRef, setMyId, setLastEvent);
-    socketProxyRef.current = socket;
+    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
+    socketRef.current = socket;
+
+    socket.onAny((eventName) => {
+      setLastEvent(eventName);
+    });
 
     socket.on('connect', () => {
+      setMyId(socket.id || '');
       setNetworkStatus('Ready');
       setSocketConnected(true);
       setLastEvent('Connected');
@@ -920,10 +751,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('room_list', (rooms: Room[]) => {
+      setLastEvent('room_list');
       setDiscoveredRooms(Array.isArray(rooms) ? rooms : []);
     });
 
     socket.on('update_rooms', (rooms: Room[]) => {
+      setLastEvent('update_rooms');
       setDiscoveredRooms(Array.isArray(rooms) ? rooms : []);
     });
 
@@ -944,15 +777,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setCurrentRoom(room);
       currentRoomRef.current = room; // Sync ref immediately
       (window as any).currentRoomId = room.id; // Global fallback
-      const myIdVal = socket.id || myId;
-      const hostFlag = room.hostId === myIdVal;
+      const hostFlag = room.hostId === socket.id;
       setIsHost(hostFlag);
       isHostRef.current = hostFlag;
       setIsMultiplayer(true);
-      
-      // Store local shortId
-      const me = room.players?.find(p => p.id === myIdVal);
-      if (me) myShortIdRef.current = me.shortId || null;
       
       // Forced cleanup before lobby starts
       entitiesRef.current = [];
@@ -976,14 +804,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setCurrentRoom(roomData);
       currentRoomRef.current = roomData; // Sync ref immediately
       (window as any).currentRoomId = roomData.id; // Global fallback
-      const myIdVal = socket.id || myId;
-      const hostFlag = roomData.hostId === myIdVal;
+      const hostFlag = roomData.hostId === socket.id;
       setIsHost(hostFlag);
       isHostRef.current = hostFlag;
-      
-      // Store local shortId
-      const me = roomData.players?.find(p => p.id === myIdVal);
-      if (me) myShortIdRef.current = me.shortId || null;
       
       // Forced cleanup before lobby starts
       entitiesRef.current = [];
@@ -1014,16 +837,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     });
 
-    socket.on('remote_hp_sync', (data: { id: string, hp: number }) => {
-      const ent = entitiesRef.current.find(e => e.id === data.id);
-      if (ent && ent.units && ent.units.length > 0) {
-        ent.units[0].hp = data.hp;
-        if (playerRef.current?.id === data.id && playerRef.current.units.length > 0) {
-          playerRef.current.units[0].hp = data.hp;
-        }
-      }
-    });
-
     socket.on('error', (msg: string) => {
       console.error("[SOCKET ERROR]", msg);
       showError(msg);
@@ -1034,24 +847,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       ENGINE_STATE = 'MENU';
     });
 
-    socket.on('pit_removed', (data: { id: string }) => {
-      const targetId = String(data.id);
-      tunnelsRef.current = tunnelsRef.current.filter(t => {
-        const match = String(t.id) === targetId;
-        if (match) {
-          for(let i=0; i<8; i++) {
-            createDust(t.pos.x, t.pos.y, '#78350f');
-          }
-        }
-        return !match;
-      });
-    });
-
     socket.on('remote_building_destroyed', (data: { buildingId: string }) => {
       const targetId = String(data.buildingId || data);
-      
-      // Try filtering towers
-      const initialTowersLen = towersRef.current.length;
       towersRef.current = towersRef.current.filter(t => {
         const match = String(t.id) === targetId;
         if (match) {
@@ -1065,19 +862,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
         return !match;
       });
-
-      // If not found in towers, try filtering tunnels
-      if (towersRef.current.length === initialTowersLen) {
-        tunnelsRef.current = tunnelsRef.current.filter(t => {
-          const match = String(t.id) === targetId;
-          if (match) {
-            for(let i=0; i<8; i++) {
-              createDust(t.pos.x, t.pos.y, '#78350f');
-            }
-          }
-          return !match;
-        });
-      }
     });
 
     socket.on('remote_gate_toggled', (data: { buildingId: string, isOpen: boolean }) => {
@@ -1120,7 +904,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         color: data.color || '#fbbf24',
         empireId: data.empireId || 'neutral',
         targetPos: { x: data.targetX, y: data.targetY },
-        targetId: data.targetId,
         isReal: true
       });
       
@@ -1164,14 +947,16 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           kills: killsRef.current
         });
 
-        // Removed local trigger. Only server decides via game_over_final.
+        ENGINE_STATE = 'MATCH_RESULTS';
+        setGameState('MATCH_RESULTS');
+        gameStateRef.current = 'MATCH_RESULTS';
         saveFinalStats(false);
         setIsSpectator(true);
       }
     });
 
     socket.on('player_eliminated', (data: { loserId: string, winnerId?: string, winnerName: string }) => {
-      const mySid = socketProxyRef.current?.id || myIdRef.current;
+      const mySid = socketRef.current?.id || myIdRef.current;
       
       const isItMe = data.loserId === mySid || (myIdRef.current && data.loserId === myIdRef.current);
 
@@ -1194,7 +979,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           kills: killsRef.current
         });
         
-        // Removed local trigger. Only server decides via game_over_final.
+        ENGINE_STATE = 'MATCH_RESULTS';
+        setGameState('MATCH_RESULTS');
+        gameStateRef.current = 'MATCH_RESULTS';
         saveFinalStats(false);
         setIsSpectator(true);
       } else {
@@ -1203,12 +990,39 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         remotePlayersRef.current.delete(data.loserId);
         entitiesRef.current = entitiesRef.current.filter(e => e.id !== data.loserId);
         
-        // REMOVED: Local win detection. Only server decides via game_over_final.
+        // CHECK: If we are the ONLY ONE left after this elimination, we WIN.
+        const alivePlayers = entitiesRef.current.filter(e => e.type === 'player' && e.units.length > 0);
+        const mySidVal = socketRef.current?.id || myId;
+        const amIAlive = entitiesRef.current.find(e => e.id === mySidVal && e.units.length > 0);
+
+        if (alivePlayers.length === 1 && amIAlive && !isSpectatorRef.current) {
+            setMatchResult({ isWinner: true, winnerName: nickname || 'You' });
+            
+            const endTime = Date.now();
+            endTimeRef.current = endTime;
+            const start = startTimeRef.current || (endTime - 1000);
+            const durationSecs = Math.floor((endTime - start) / 1000);
+            const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
+            const secs = (durationSecs % 60).toString().padStart(2, '0');
+            
+            setMatchStats({
+              duration: `${mins}:${secs}`,
+              maxArmy: maxArmyRef.current,
+              towersBuilt: towersBuiltRef.current,
+              kills: killsRef.current
+            });
+            
+            ENGINE_STATE = 'MATCH_RESULTS';
+            setGameState('MATCH_RESULTS');
+            gameStateRef.current = 'MATCH_RESULTS';
+            saveFinalStats(true);
+            setIsSpectator(true);
+        }
       }
     });
 
     socket.on('game_over_final', (data: { winnerId: string, winnerName: string }) => {
-      const mySid = socketProxyRef.current?.id || myIdRef.current;
+      const mySid = socketRef.current?.id || myIdRef.current;
       
       // If the server says we won, OR if we are the only one left and the winner is null (Draw fallback)
       const isWinner = data.winnerId === mySid || (myIdRef.current && data.winnerId === myIdRef.current) || (data.winnerId === null && !isSpectatorRef.current);
@@ -1246,11 +1060,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setCurrentRoom(room);
       currentRoomRef.current = room; // Sync ref immediately
       
-      const myIdVal = socket.id || myId;
-      const me = room.players?.find(p => p.id === myIdVal);
-      if (me) myShortIdRef.current = me.shortId || null;
-
-      const hostFlag = room.hostId === myIdVal;
+      const hostFlag = room.hostId === socket.id;
       if (hostFlag !== isHostRef.current) {
         setIsHost(hostFlag);
         isHostRef.current = hostFlag;
@@ -1290,28 +1100,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socket.on('remote_building_placed', (data: any) => {
       const bId = String(data.buildingId || data.id);
       if (!bId) return;
-      
+      if (towersRef.current.some(t => String(t.id) === bId)) return;
+
       // Detect type correctly (Wall, Gate, Tower or Tunnel)
       let type: 'wall' | 'gate' | 'tower' | 'tunnel' = 'tower';
       if (data.type === 'WALL' || data.type === 'wall') type = 'wall';
       else if (data.type === 'GATE' || data.type === 'gate') type = 'gate';
-      else if (data.type === 'tunnel' || data.type === 'pit') type = 'tunnel';
+      else if (data.type === 'tunnel') type = 'tunnel';
 
-      if (type === 'tunnel') {
-        if (tunnelsRef.current.some(t => String(t.id) === bId)) return;
-        tunnelsRef.current.push({
-          id: bId,
-          ownerId: data.ownerId || data.faction,
-          pos: { x: data.x, y: data.y },
-          color: data.faction,
-          connectedId: data.connectedId
-        } as any);
-        return;
-      }
-
-      if (towersRef.current.some(t => String(t.id) === bId)) return;
-
-      const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : TOWER_MAX_HP;
+      const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : (type === 'tunnel' ? 999999 : TOWER_MAX_HP);
 
       // Try to determine empireId from faction color if missing
       let bEmpireId = data.empireId;
@@ -1401,11 +1198,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           return;
       }
 
-      // RULE OF EQUAL LAYERS (v2.9.6)
-      // Damage is only applied if attacker and victim are on the same level.
-      // Server already validates this, but client syncs for smoothness.
+      // NEW: Underground units take no damage from surface attacks
       const p = playerRef.current;
-      if (p && p.isUnderground !== data.isUndergroundAttack) return;
+      if (p && p.isUnderground && !data.isUndergroundAttack) return;
 
       if (data.garrisonId) {
           const g = garrisonsRef.current.find(g => g.id === data.garrisonId);
@@ -1475,7 +1270,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         // Commander is dying
                         
                         // Send death event to server so others know
-                        socketProxyRef.current?.emit('commander_death_detected', { 
+                        socketRef.current?.emit('commander_death_detected', { 
                           roomId: currentRoomRef.current?.id, 
                           winnerId: data.attackerId || null, 
                           loserId: myId 
@@ -1501,6 +1296,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         });
                         
                         saveFinalStats(false);
+                        
+                        ENGINE_STATE = 'MATCH_RESULTS';
+                        setGameState('MATCH_RESULTS');
+                        gameStateRef.current = 'MATCH_RESULTS';
                         setIsSpectator(true);
                     } else if (idx === 0 && p.units.length > 1) {
                         // If somehow the commander was targeted but has army, 
@@ -1538,6 +1337,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         saveFinalStats(false);
                       }
 
+                      ENGINE_STATE = 'MATCH_RESULTS';
+                      setGameState('MATCH_RESULTS');
+                      gameStateRef.current = 'MATCH_RESULTS';
                       setIsSpectator(true);
                     }
                 }
@@ -1635,37 +1437,29 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       startLobbyArena(roomData.players || []);
     });
 
-    // --- DATA NORMALIZATION (v2.9.5) ---
     socket.on('remote_tunnel_update', (data: any) => {
-      const normalizedTunnel = {
-        ...data,
-        pos: data.pos || (data.x !== undefined && data.y !== undefined ? { x: data.x, y: data.y } : undefined),
-        x: data.x !== undefined ? data.x : (data.pos ? data.pos.x : undefined),
-        y: data.y !== undefined ? data.y : (data.pos ? data.pos.y : undefined)
-      };
-
-      if (!normalizedTunnel.pos || normalizedTunnel.pos.x === undefined) return;
-
-      const existingIdx = tunnelsRef.current.findIndex(t => t.id === normalizedTunnel.id);
+      console.log("RECEIVED REMOTE TUNNEL UPDATE:", data);
+      
+      // If we receive a tunnel from the server, we MUST ensure it's added.
+      // We will re-assign the entire array to trigger any necessary React state updates (though it's a ref, it's safer for the render loop).
+      const existingIdx = tunnelsRef.current.findIndex(t => t.id === data.id);
+      
       if (existingIdx !== -1) {
-        tunnelsRef.current[existingIdx] = normalizedTunnel;
+        tunnelsRef.current[existingIdx] = data;
       } else {
-        tunnelsRef.current.push(normalizedTunnel);
+        tunnelsRef.current.push(data);
       }
     });
 
     socket.on('remote_tunnel_remove', (data: { id: string }) => {
+      console.log("RECEIVED REMOTE TUNNEL REMOVE:", data.id);
       tunnelsRef.current = tunnelsRef.current.filter(t => t.id !== data.id);
     });
 
-    socket.on('sync_tunnels', (data: { tunnels: any[] }) => {
+    socket.on('sync_tunnels', (data: { tunnels: TunnelEntrance[] }) => {
+      console.log("SYNC TUNNELS RECEIVED FROM SERVER:", data.tunnels);
       if (data.tunnels && Array.isArray(data.tunnels)) {
-        tunnelsRef.current = data.tunnels.map(t => ({
-          ...t,
-          pos: t.pos || (t.x !== undefined && t.y !== undefined ? { x: t.x, y: t.y } : undefined),
-          x: t.x !== undefined ? t.x : (t.pos ? t.pos.x : undefined),
-          y: t.y !== undefined ? t.y : (t.pos ? t.pos.y : undefined)
-        })).filter(t => t.pos && t.pos.x !== undefined);
+        tunnelsRef.current = data.tunnels;
       }
     });
 
@@ -1902,7 +1696,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               existing.targetPos = { ...rc.targetPos };
               existing.escortOwnerId = rc.escortOwnerId;
               
-              const sid = socketProxyRef.current?.id || myIdRef.current;
+              const sid = socketRef.current?.id || myIdRef.current;
               if (existing.escortOwnerId !== sid) {
                   existing.escortTimer = rc.escortTimer;
               }
@@ -2017,8 +1811,36 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // PURGE: player_joined listener removed as per GHOST PROTOCOL - Handled strictly by room_update
 
+    // ANTI-THROTTLING HEARTBEAT
+    const heartbeat = setInterval(() => {
+      if (socket.connected) {
+        socket.emit('heartbeat', { id: socket.id, time: Date.now() });
+      }
+    }, 1000);
+
     return () => {
+      socket.off('connect');
+      socket.off('connect_error');
+      socket.off('room_list');
+      socket.off('update_rooms');
+      socket.off('room_created');
+      socket.off('join_success');
+      socket.off('remote_building_destroyed');
+      socket.off('remote_building_hit');
+      socket.off('remote_gate_toggled');
+      socket.off('remote_tower_fire');
+      socket.off('remote_building_placed');
+      socket.off('remote_commander_down');
+      socket.off('you_died');
+      socket.off('take_unit_damage');
+      socket.off('room_update');
+      socket.off('start_countdown');
+      socket.off('match_started');
+      socket.off('update_rematch_votes');
+      socket.off('rematch_started');
+      socket.off('error');
       socket.disconnect();
+      clearInterval(heartbeat);
     };
   }, []);
 
@@ -2027,8 +1849,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     // This effect now only handles periodic world sync if host
     if (gameState === 'GAME_ACTIVE' && isMultiplayer && isHost && currentRoom) {
       const interval = setInterval(() => {
-        if (socketProxyRef.current && currentRoom) {
-          socketProxyRef.current.emit('host_sync_world', {
+        if (socketRef.current && currentRoom) {
+          socketRef.current.emit('host_sync_world', {
             roomId: currentRoom.id,
             neutrals: neutralsRef.current,
             towers: towersRef.current
@@ -2045,12 +1867,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const startLobby = () => {
-    if (!roomForm.name.trim() || !nickname.trim() || !socketProxyRef.current) return;
+    if (!roomForm.name.trim() || !nickname.trim() || !socketRef.current) return;
     setIsCreatingRoom(true);
     setIsMultiplayer(true);
     setGameState('LOBBY_WAITING');
     ENGINE_STATE = 'LOBBY_WAITING';
-    socketProxyRef.current.emit('create_room', {
+    socketRef.current.emit('create_room', {
       name: roomForm.name,
       password: roomForm.password,
       limit: roomForm.limit,
@@ -2059,7 +1881,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const joinRoom = (room: Room) => {
-    if (!socketProxyRef.current) return;
+    if (!socketRef.current) return;
     
     // If room has a password, show our custom modal instead of prompt
     if (room.password) {
@@ -2072,14 +1894,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const submitJoinRequest = (roomId: string | number, password: string) => {
-    if (!socketProxyRef.current) return;
+    if (!socketRef.current) return;
     
     setIsJoiningRoom(true);
     setIsMultiplayer(true);
     setGameState('CONNECTING');
     ENGINE_STATE = 'CONNECTING';
     
-    socketProxyRef.current.emit('join_room', { 
+    socketRef.current.emit('join_room', { 
       roomId: String(roomId), 
       password: password || '',
       playerName: nickname // Send player name during join
@@ -2089,8 +1911,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   useEffect(() => {
-    if (currentRoom && socketProxyRef.current) {
-        const hostFlag = currentRoom.hostId === socketProxyRef.current.id;
+    if (currentRoom && socketRef.current) {
+        const hostFlag = currentRoom.hostId === socketRef.current.id;
         if (hostFlag !== isHost) {
             setIsHost(hostFlag);
             isHostRef.current = hostFlag;
@@ -2099,11 +1921,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   }, [currentRoom, isHost]);
 
   const leaveRoom = () => {
-    if (socketProxyRef.current && currentRoom) {
+    if (socketRef.current && currentRoom) {
       isLeavingRef.current = true;
       
       // Standard leave logic
-      socketProxyRef.current.emit('leave_room', String(currentRoom.id));
+      socketRef.current.emit('leave_room', String(currentRoom.id));
       
       // Clear flag after a delay to allow future joins
       setTimeout(() => {
@@ -2132,9 +1954,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   };
 
   const voteRematch = () => {
-    if (!socketProxyRef.current || !currentRoom) return;
+    if (!socketRef.current || !currentRoom) return;
     // Rematch vote emit
-    socketProxyRef.current.emit('vote_rematch', currentRoom.id);
+    socketRef.current.emit('vote_rematch', currentRoom.id);
     setHasVoted(true);
   };
 
@@ -2224,7 +2046,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
       
       // Fast sync trigger for the new split
-      if (socketProxyRef.current && currentRoomRef.current) {
+      if (socketRef.current && currentRoomRef.current) {
           const myGarrisons = garrisonsRef.current
             .filter(g => g.ownerId === myId)
             .map(g => ({
@@ -2234,11 +2056,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               unitCount: g.units.length,
               empireId: g.empireId,
               color: g.color,
-              attackTimer: g.attackTimer,
-              isUnderground: g.isUnderground // SYNC LAYER
+              attackTimer: g.attackTimer
             }));
 
-          socketProxyRef.current.emit('sync_data', {
+          socketRef.current.emit('sync_data', {
             roomId: currentRoomRef.current.id,
             garrisons: myGarrisons,
             unitCount: ent.units.length,
@@ -2281,7 +2102,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
         
         // Sync
-        if (socketProxyRef.current && currentRoomRef.current) {
+        if (socketRef.current && currentRoomRef.current) {
             const myGarrisons = garrisonsRef.current
                 .filter(g => g.ownerId === myId)
                 .map(g => ({
@@ -2291,11 +2112,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     unitCount: g.units.length,
                     empireId: g.empireId,
                     color: g.color,
-                    attackTimer: g.attackTimer,
-                    isUnderground: g.isUnderground // SYNC LAYER
+                    attackTimer: g.attackTimer
                 }));
 
-            socketProxyRef.current.emit('sync_data', {
+            socketRef.current.emit('sync_data', {
                 roomId: currentRoomRef.current.id,
                 garrisons: myGarrisons,
                 unitCount: p.units.length,
@@ -2384,16 +2204,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // Handle Buildings - PURE POSITION DISPLACEMENT (NO DAMAGE)
     for (const t of towers) {
-      // --- NUCLEAR NORMALIZATION & CHECK (v2.9.3) ---
-      if (!t) continue;
-      const tX = t.x !== undefined ? t.x : (t.pos ? t.pos.x : undefined);
-      const tY = t.y !== undefined ? t.y : (t.pos ? t.pos.y : undefined);
-      
-      if (tX === undefined || tY === undefined) continue;
-      
-      // Ensure t.pos exists for the rest of the function logic
-      if (!t.pos) (t as any).pos = { x: tX, y: tY };
-
       if (t.type === 'gate' && t.isOpen) continue;
       
       // Optimization: Skip buildings that are clearly too far
@@ -2469,12 +2279,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         const p = playerRef.current;
         if (p.equippedItem === 'shovel' || p.equippedItem === 'super_shovel') {
           // Digging mechanic
-          if (p.shovelUses && p.shovelUses > 0 && p.units && p.units.length > 0 && p.units[0].pos) {
-            const headPos = p.units[0].pos;
+          if (p.shovelUses && p.shovelUses > 0) {
             p.shovelUses -= 1;
             p.attackTimer = 300;
             p.attackCooldown = 500;
-            createDust(headPos.x, headPos.y, '#78350f'); // Dirt color
+            createDust(p.units[0].pos.x, p.units[0].pos.y, '#78350f'); // Dirt color
             
             if (p.shovelUses <= 0) {
               p.equippedItem = 'sword'; // Break shovel
@@ -2485,21 +2294,18 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const newTunnelObj = {
               id: generateId('tunnel'),
               type: 'tunnel',
-              x: headPos.x,
-              y: headPos.y,
-              pos: { x: headPos.x, y: headPos.y }, // DUAL INIT (v2.9.3)
+              x: p.units[0].pos.x,
+              y: p.units[0].pos.y,
               ownerId: p.id,
               faction: p.color,
               hp: 999999
             };
             
-            // OPTIMISTIC UPDATE: Add to tunnelsRef (Separated from buildings)
-            tunnelsRef.current.push({
+            // OPTIMISTIC UPDATE: Add to towersRef (the common building array)
+            towersRef.current.push({
                 id: newTunnelObj.id,
                 ownerId: p.id,
                 pos: { x: newTunnelObj.x, y: newTunnelObj.y },
-                x: newTunnelObj.x, // DUAL INIT (v2.9.3)
-                y: newTunnelObj.y, // DUAL INIT (v2.9.3)
                 color: p.color,
                 hp: 999999,
                 maxHp: 999999,
@@ -2508,13 +2314,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 empireId: p.empireId,
                 rotation: 0,
                 isOpen: false
-            } as any);
+            });
             
-            if (socketProxyRef.current) {
+            if (socketRef.current) {
               const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
-              if (canEmitNetworkEvent('tunnel_update')) {
-                socketProxyRef.current.emit('tunnel_update', { roomId: currentRoomId, ...newTunnelObj });
-              }
+              console.log("EMITTING TUNNEL TO SERVER:", currentRoomId, newTunnelObj);
+              socketRef.current.emit('building_placed', { roomId: currentRoomId, ...newTunnelObj });
             }
           }
         } else {
@@ -2523,8 +2328,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           p.attackTimer = 300;
           p.attackCooldown = 500;
           p.swingKills = 0; // Reset swing kills
-          if (socketProxyRef.current && currentRoom) {
-            socketProxyRef.current.emit('attack', { roomId: currentRoom.id });
+          if (socketRef.current && currentRoom) {
+            socketRef.current.emit('attack', { roomId: currentRoom.id });
           }
         }
       }
@@ -2629,7 +2434,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     }
   };
 
-  const fireProjectile = (ownerId: string, pos: Vector, target: Vector, color: string, empireId?: EmpireType, targetId?: string) => {
+  const fireProjectile = (ownerId: string, pos: Vector, target: Vector, color: string, empireId?: EmpireType) => {
     const angle = Math.atan2(target.y - pos.y, target.x - pos.x);
     projectilesRef.current.push({
       id: generateId(),
@@ -2640,13 +2445,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       damage: 60, // Projectile damage (will be modified by AoE later)
       color,
       empireId,
-      targetPos: { ...target },
-      targetId
+      targetPos: { ...target }
     });
     
     // Sync projectile creation so enemies can see it
-    if (socketProxyRef.current && currentRoomRef.current) {
-        socketProxyRef.current.emit('tower_fire', {
+    if (socketRef.current && currentRoomRef.current) {
+        socketRef.current.emit('tower_fire', {
             roomId: currentRoomRef.current.id,
             ownerId,
             startX: pos.x,
@@ -2654,8 +2458,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             targetX: target.x,
             targetY: target.y,
             color,
-            empireId,
-            targetId
+            empireId
         });
     }
   };
@@ -2839,7 +2642,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       towersBuiltRef.current++;
       shakeRef.current = bType === 'tower' ? 15 : 5;
 
-      socketProxyRef.current?.emit('building_placed', { 
+      socketRef.current?.emit('building_placed', { 
         buildingId: bId,
         id: bId,
         roomId: currentRoom?.id, 
@@ -2908,8 +2711,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (clickedCaravan) {
             const pHead = playerRef.current?.units[0];
             if (pHead && getDistance(clickedCaravan.pos, pHead.pos) < 250) {
-                const sid = socketProxyRef.current?.id || myId;
-                socketProxyRef.current?.emit('sync_data', { roomId: currentRoomRef.current?.id, caravanEscortRequest: clickedCaravan.id });
+                const sid = socketRef.current?.id || myId;
+                socketRef.current?.emit('sync_data', { roomId: currentRoomRef.current?.id, caravanEscortRequest: clickedCaravan.id });
                 createDust(clickedCaravan.pos.x, clickedCaravan.pos.y, '#fbbf24');
                 if (isHostRef.current) {
                     clickedCaravan.escortOwnerId = sid;
@@ -2933,7 +2736,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 recentlyDestroyedGarrisons.current.set(clickedGarrison.id, Date.now());
                 setPlayerGarrisons([...garrisonsRef.current.filter(xg => xg.ownerId === myId)]);
                 createDust(clickedGarrison.pos.x, clickedGarrison.pos.y, clickedGarrison.color);
-                socketProxyRef.current?.emit('garrison_destroyed', { roomId: currentRoomRef.current?.id, garrisonId: clickedGarrison.id, ownerId: myId });
+                socketRef.current?.emit('garrison_destroyed', { roomId: currentRoomRef.current?.id, garrisonId: clickedGarrison.id, ownerId: myId });
                 lastSyncTimeRef.current = 0; 
                 return;
             }
@@ -2959,7 +2762,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       const b = towersRef.current[clickedBuildingIdx];
       
       // Ownership check: ID or faction color/string
-      const currentId = socketProxyRef.current?.id || myId;
+      const currentId = socketRef.current?.id || myId;
       const isOwner = b.ownerId === currentId || b.color === playerColor || b.faction === playerColor;
       
       if (isOwner) {
@@ -2967,7 +2770,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (b.type === 'gate' && isMobile && pHead && getDistance(b.pos, pHead.pos) < 150) {
             b.isOpen = !b.isOpen;
             createDust(b.pos.x, b.pos.y, '#fbbf24');
-            socketProxyRef.current?.emit('toggle_gate', { roomId: currentRoomRef.current?.id, buildingId: b.id, isOpen: b.isOpen });
+            socketRef.current?.emit('toggle_gate', { roomId: currentRoomRef.current?.id, buildingId: b.id, isOpen: b.isOpen });
             return;
         }
 
@@ -2994,7 +2797,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           createDust(b.pos.x, b.pos.y, '#fbbf24');
           
           // Emit destruction to server (Authoritative sync)
-          socketProxyRef.current?.emit('building_destroyed', { 
+          socketRef.current?.emit('building_destroyed', { 
             roomId: currentRoomRef.current?.id, 
             buildingId: b.id 
           });
@@ -3026,7 +2829,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     };
     caravansRef.current = [];
     
-    const sid = socketProxyRef.current?.id || myId;
+    const sid = socketRef.current?.id || myId;
     
     // Ensure the local player is ALWAYS included in the lobby even if server list is slightly delayed
     let playerList = [...players];
@@ -3131,7 +2934,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     };
     caravansRef.current = [];
     
-    const sid = socketProxyRef.current?.id || myId;
+    const sid = socketRef.current?.id || myId;
     
     // Dynamic Spawn Points calculation
     const getSpawnPos = (idx: number) => {
@@ -3229,8 +3032,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       };
       
       // Emit initial sync to inform server of teleport
-      if (socketProxyRef.current && currentRoomRef.current) {
-        socketProxyRef.current.emit('sync_data', {
+      if (socketRef.current && currentRoomRef.current) {
+        socketRef.current.emit('sync_data', {
           x: playerRef.current.units[0].pos.x,
           y: playerRef.current.units[0].pos.y,
           rotation: playerRef.current.facingAngle,
@@ -3248,7 +3051,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (gameState === 'LOBBY_WAITING' && currentRoom && isHost) {
       const pCount = (currentRoom.players || []).length;
       if (pCount >= (currentRoom.limit || currentRoom.maxPlayers || 10) && countdown === null) {
-        socketProxyRef.current?.emit('start_countdown', { roomId: currentRoom.id });
+        socketRef.current?.emit('start_countdown', { roomId: currentRoom.id });
       }
     }
   }, [currentRoom, gameState, countdown, isHost]);
@@ -3269,7 +3072,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     const p = playerRef.current;
     
     // DEBUG: Ensure playerRef is always synced with local player entity
-    const sid = socketProxyRef.current?.id || myId;
+    const sid = socketRef.current?.id || myId;
     if (!p || p.id !== sid) {
         const localEnt = entitiesRef.current.find(e => e.id === sid);
         if (localEnt) {
@@ -3354,7 +3157,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     // 3. Movement & Physics (Entities)
     entitiesRef.current.forEach(ent => {
         if (ent.units.length === 0) return;
-        const sid = socketProxyRef.current?.id || myId;
+        const sid = socketRef.current?.id || myId;
         const isLocalPlayer = ent.id === sid;
         const head = ent.units[0];
 
@@ -3486,11 +3289,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
 
         // Tunnel Entrance Interaction
-        if (ent.id === sid && head && head.pos) {
+        if (ent.id === sid) {
             let foundTunnel: any = null;
-            // Now look for tunnels inside tunnels array (separated from buildings)
-            tunnelsRef.current.forEach(b => {
-                if (b && b.pos && getDistance(head.pos, b.pos) < 120) {
+            // Now look for tunnels inside towers array
+            towersRef.current.forEach(b => {
+                if (b.type === ('tunnel' as any) && getDistance(head.pos, b.pos) < 120) {
                     foundTunnel = b;
                 }
             });
@@ -3501,16 +3304,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             if (foundTunnel && isFPressedLocal) {
                 if (!ent.lastTunnelToggle || Date.now() - ent.lastTunnelToggle > 800) {
-                    const wasUnderground = ent.isUnderground;
                     ent.isUnderground = !ent.isUnderground;
                     ent.lastTunnelToggle = Date.now();
-                    
-                    // FORCED SYNC: Snap to tunnel position on exit to prevent "ghosting"
-                    if (wasUnderground && !ent.isUnderground) {
-                        head.pos.x = foundTunnel.pos.x;
-                        head.pos.y = foundTunnel.pos.y;
-                    }
-
                     createDust(head.pos.x, head.pos.y, '#78350f');
                     if (keysRef.current['f']) keysRef.current['f'] = false;
                     if (keysRef.current['F']) keysRef.current['F'] = false;
@@ -3522,12 +3317,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const isOwner = foundTunnel && (foundTunnel.ownerId === myId || foundTunnel.ownerId === playerRef.current?.id);
             if (foundTunnel && isOwner && isRPressedLocal) {
                 const tid = foundTunnel.id;
-                // Local removal
-                tunnelsRef.current = tunnelsRef.current.filter(b => b.id !== tid);
+                towersRef.current = towersRef.current.filter(b => b.id !== tid);
                 
-                if (socketProxyRef.current) {
+                if (socketRef.current) {
                     const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
-                    socketProxyRef.current.emit('hide_pit', { roomId: currentRoomId, id: tid });
+                    console.log("EMITTING TUNNEL DESTROY:", tid);
+                    socketRef.current.emit('building_destroyed', { roomId: currentRoomId, buildingId: tid });
                 }
                 if (keysRef.current['r']) keysRef.current['r'] = false;
                 if (keysRef.current['R']) keysRef.current['R'] = false;
@@ -3535,7 +3330,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             }
         }
 
-        if (ent.id === myId || (socketProxyRef.current?.id && ent.id === socketProxyRef.current.id)) {
+        if (ent.id === myId || (socketRef.current?.id && ent.id === socketRef.current.id)) {
             let finalSpd = spd * dt_scale;
             if (ent.isAttacking && ent.cachedMinDist && ent.cachedMinDist < 150) {
                 finalSpd *= 1.25;
@@ -3543,7 +3338,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             // Underground players ignore obstacles and towers
             const obstaclesToUse = ent.isUnderground ? [] : gameMapRef.current.obstacles;
-            const towersToUse = ent.isUnderground ? [] : towersRef.current; // Tunnels are already separate and ignored here
+            const towersToUse = ent.isUnderground ? [] : towersRef.current;
             
             const nextPos = resolveCollision(head.pos, { x: ent.velocity.x * finalSpd, y: ent.velocity.y * finalSpd }, obstaclesToUse, towersToUse);
             if (nextPos.x > 0 && nextPos.x < currentWorldSize) head.pos.x = nextPos.x;
@@ -3607,7 +3402,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (g.units.length === 0) return;
         
         // Ownership check: only owner (or host for AI) calculates logic. Others just LERP.
-        const isOwner = g.ownerId === myId || (socketProxyRef.current?.id && g.ownerId === socketProxyRef.current.id);
+        const isOwner = g.ownerId === myId || (socketRef.current?.id && g.ownerId === socketRef.current.id);
         const shouldCalculate = isOwner || (isMultiplayer && isHostRef.current && g.ownerId === 'ai');
 
         if (!shouldCalculate) {
@@ -3656,7 +3451,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         // LOCAL GARRISON LOGIC (Calculated only by owner/host)
         if (g.units.length === 1 && g.mode !== 'RECALL') {
             g.mode = 'RECALL';
-            if (isMultiplayer) socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' });
+            if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' });
         }
 
         // Throttle heavy AI/Detection logic (every 10 frames for each garrison)
@@ -3692,7 +3487,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
                 if (nearestEnemyDist < 450) {
                     g.mode = 'HUNT';
-                    if (isMultiplayer) socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
+                    if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
                     // FIXED: Immediate target acquisition on transition to prevent "stuck" frames
                     shouldRunHeavyLogic = true; 
                 } else {
@@ -3702,7 +3497,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         const d = getDistance(g.pos, t.pos);
                         if (d < 450) {
                             g.mode = 'HUNT';
-                            if (isMultiplayer) socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
+                            if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
                             shouldRunHeavyLogic = true;
                         }
                     });
@@ -3825,7 +3620,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         entityMap.set(ent.id, ent);
         if (ent.units.length === 0) return;
         
-        const isMe = ent.id === myId || (socketProxyRef.current?.id && ent.id === socketProxyRef.current.id);
+        const isMe = ent.id === myId || (socketRef.current?.id && ent.id === socketRef.current.id);
         const inView = isLocalInView(ent.units[0].pos);
         if (!isMe && !inView) return;
 
@@ -3850,7 +3645,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     garrisonsRef.current.forEach(g => {
         if (g.units.length === 0) return;
         
-        const isMyGarrison = g.ownerId === myId || (socketProxyRef.current?.id && g.ownerId === socketProxyRef.current.id);
+        const isMyGarrison = g.ownerId === myId || (socketRef.current?.id && g.ownerId === socketRef.current.id);
         const inView = isLocalInView(g.pos);
         if (!isMyGarrison && !inView) return;
 
@@ -3921,7 +3716,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       entitiesRef.current.forEach(e1 => {
         if (e1.units.length === 0) return;
         
-        const isOwner = e1.id === myId || (socketProxyRef.current?.id && e1.id === socketProxyRef.current.id);
+        const isOwner = e1.id === myId || (socketRef.current?.id && e1.id === socketRef.current.id);
         const shouldCalculate = isOwner || (!isMultiplayer && e1.type === 'ai') || (isMultiplayer && isHostRef.current && e1.type === 'ai');
         if (!shouldCalculate) return;
 
@@ -3984,14 +3779,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 let targetObj = isTargetGarrison ? garrisonMap.get(n.entityId.substring(2)) : entityMap.get(n.entityId);
                 if (!targetObj) continue;
 
-                // --- Rule of Equal Layers (v2.9.6) ---
-                // Damage is allowed if BOTH are on the same layer.
+                // NEW: Layer Isolation for Combat
                 if (e1.isUnderground !== targetObj.isUnderground) continue;
 
                 // FIXED: Only explicit attack triggers damage for players. AI still has auto-attack.
                 const isAI = e1.type === 'ai';
-                // REWRITE: Underground units CAN attack each other (Underground War)
-                const isActive = (e1.isAttacking || e1.isUnderground) && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
+                const isActive = e1.isAttacking && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
                 const isAuto = isAI && !e1.isAttacking && (d < 30 && Math.random() < 0.01);
 
                 if (isActive || isAuto) {
@@ -4018,9 +3811,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   if (frameDamageMap.get(entityHitKey)! >= frameLimit) continue;
 
                   const damageVal = 100;
-                  const isRemotePlayerHit = isMultiplayer && !isTargetGarrison && entityMap.get(n.entityId)?.type === 'player';
                   if (e1.id === myId && tOwnerId !== myId) {
-                      socketProxyRef.current?.emit('unit_hit', { 
+                      socketRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
                           damage: damageVal, 
@@ -4030,22 +3822,23 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           isUndergroundAttack: e1.isUnderground // NEW: Sync underground status
                       });
                   }
+                  
+                  // Apply local damage
+                  n.unit.hp -= damageVal;
                   targetObj.lastDamageTime = now;
                   frameDamageMap.set(entityHitKey, frameDamageMap.get(entityHitKey)! + 1);
 
-                  if (isRemotePlayerHit) {
-                      createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
-                      continue;
-                  }
-
-                  n.unit.hp -= damageVal;
-
                   if (n.unit.hp <= 0) {
+                      // CRITICAL: VISUAL PREDICTION
+                      // If I am the attacker, I remove the unit locally IMMEDIATELY so it feels smooth.
+                      // If I am the victim, I remove it because it's my unit and I'm the authority.
+                      // If it's a garrison or AI, we also remove it locally.
                       if (isTargetGarrison || tOwnerId === myId || !isMultiplayer || (e1.id === myId)) {
                           unitsToRemove.add(n.unit.id);
                       }
                       
                       e1.swingKills = (e1.swingKills || 0) + 1;
+                      // "Hunting" reward: Killing neutrals (Holops) gives more than regular kills
                       const reward = (n.entityId === 'neutral') ? 15 : 5;
                       e1.akce += reward; 
                       if (e1.id === myId) { 
@@ -4053,6 +3846,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         setKills(k => k + 1); 
                         setPlayerAkce(e1.akce); 
                         if (reward > 5) {
+                          // Visual indicator for "Hunting" success
                           particlesRef.current.push({
                             pos: { ...n.unit.pos },
                             vel: { x: 0, y: -2 },
@@ -4074,7 +3868,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       garrisonsRef.current.forEach(g => {
         if (g.units.length === 0) return;
         
-        const isOwner = g.ownerId === myId || (socketProxyRef.current?.id && g.ownerId === socketProxyRef.current.id);
+        const isOwner = g.ownerId === myId || (socketRef.current?.id && g.ownerId === socketRef.current.id);
         const shouldCalculate = isOwner || (isMultiplayer && isHostRef.current && g.ownerId === 'ai');
         if (!shouldCalculate) return;
 
@@ -4110,8 +3904,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         t.hp = Math.max(0, t.hp - 1);
                         createDust(t.pos.x, t.pos.y, t.color);
                         if (isOwner) {
-                            socketProxyRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
-                            if (t.hp <= 0 && oldHp > 0) socketProxyRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+                            socketRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
+                            if (t.hp <= 0 && oldHp > 0) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
                         }
                     }
                 });
@@ -4187,11 +3981,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   const damageVal = 100; // Instakill
                   const isAttackerLocal = g.ownerId === myId;
                   const isAttackerHostAI = isHostRef.current && g.ownerId === 'ai';
-                  const isRemotePlayerHit = isMultiplayer && !isTargetGarrison && entityMap.get(n.entityId)?.type === 'player';
                   
                   if (isAttackerLocal || isAttackerHostAI) {
                     if (!isTargetGarrison) {
-                      socketProxyRef.current?.emit('unit_hit', { 
+                      socketRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
                           damage: damageVal, 
@@ -4201,7 +3994,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           isUndergroundAttack: g.isUnderground // NEW: Sync underground status
                       });
                     } else {
-                      socketProxyRef.current?.emit('garrison_hit', { 
+                      socketRef.current?.emit('garrison_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: tOwnerId, 
                           damage: damageVal, 
@@ -4212,15 +4005,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                       });
                     }
                   }
+                  
+                  n.unit.hp -= damageVal;
                   targetObj.lastDamageTime = now;
                   frameDamageMap.set(garrisonHitKey, (frameDamageMap.get(garrisonHitKey) || 0) + 1);
-
-                  if (isRemotePlayerHit) {
-                      createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
-                      continue;
-                  }
-
-                  n.unit.hp -= damageVal;
 
                   if (n.unit.hp <= 0) {
                       if (isTargetGarrison || tOwnerId === myId || !isMultiplayer || isAttackerLocal || isAttackerHostAI) {
@@ -4246,8 +4034,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               t.hp = Math.max(0, t.hp - 1);
               createDust(t.pos.x, t.pos.y, t.color);
               if (isOwner) {
-                socketProxyRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
-                if (t.hp <= 0 && oldHp > 0) socketProxyRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+                socketRef.current?.emit('building_hit', { roomId: currentRoomRef.current?.id, buildingId: t.id, hp: t.hp });
+                if (t.hp <= 0 && oldHp > 0) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
               }
             }
           });
@@ -4257,17 +4045,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       // Projectiles & AoE
       for (let i = projectilesRef.current.length - 1; i >= 0; i--) {
         const pr = projectilesRef.current[i];
-
-        // NEW: Projectile Disappearing Logic - If target goes underground, projectile vanishes
-        if (pr.targetId) {
-            const targetEnt = entitiesRef.current.find(e => e.id === pr.targetId);
-            const targetGar = garrisonsRef.current.find(g => g.id === pr.targetId);
-            if ((targetEnt && targetEnt.isUnderground) || (targetGar && targetGar.isUnderground)) {
-                projectilesRef.current.splice(i, 1);
-                continue;
-            }
-        }
-
         if (Math.random() < 0.6) particlesRef.current.push({ pos: { ...pr.pos }, vel: { x: (Math.random()-0.5)*2, y: (Math.random()-0.5)*2 }, life: 0.6, maxLife: 0.6, color: 'rgba(100,116,139,0.4)', type: 'dust' });
         if (pr.targetPos) {
           const a = Math.atan2(pr.targetPos.y - pr.pos.y, pr.targetPos.x - pr.pos.x);
@@ -4303,48 +4080,44 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             for (let ui = e.units.length - 1; ui >= 0; ui--) {
               if (hitCount >= maxHits) break;
               if (getDistance(impactP as Vector, e.units[ui].pos) < aoeR) {
-                const isRemotePlayerHit = isMultiplayer && e.type === 'player';
-                hitCount++;
-                if (isRemotePlayerHit) {
-                  createDust(impactP!.x, impactP!.y, e.color);
-                  if (pr.ownerId === myId) {
-                      socketProxyRef.current?.emit('unit_hit', { 
-                          roomId: currentRoomRef.current?.id, 
-                          targetPlayerId: e.id, 
-                          damage: aoeD,
-                          unitIndex: ui,
-                          attackerId: pr.ownerId === myId ? 'tower' : pr.ownerId, // Marker for tower arbitration
-                          attackerName: nickname
-                      });
-                  }
-                  continue;
-                }
-
                 e.units[ui].hp -= aoeD;
+                hitCount++;
                 if (e.units[ui].hp <= 0) {
+                  // VISUAL PREDICTION: Remove locally if we are attacker or owner
                   if (ui !== 0 || e.id === myId || !isMultiplayer || pr.ownerId === myId) {
                       e.units.splice(ui, 1);
                   }
                   
                   createDust(impactP!.x, impactP!.y, e.color);
                   
+                  // SERVER SYNC: Inform the target player they took damage
                   if (pr.ownerId === myId) {
-                      socketProxyRef.current?.emit('unit_hit', { 
+                      socketRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: e.id, 
                           damage: aoeD,
                           unitIndex: ui,
-                          attackerId: pr.ownerId === myId ? 'tower' : pr.ownerId, // Marker for tower arbitration
+                          attackerId: pr.ownerId,
                           attackerName: nickname
                       });
                   }
+                  
+                  // SERVER SYNC: Any client that detects a commander death should report it.
+                  if (ui === 0 && e.units.length === 1) {
+                      socketRef.current?.emit('commander_death_detected', { 
+                        roomId: currentRoomRef.current?.id, 
+                        winnerId: pr.ownerId === 'remote'?null:pr.ownerId, 
+                        loserId: e.id 
+                      });
+                  }
                 } else if (pr.ownerId === myId) {
-                   socketProxyRef.current?.emit('unit_hit', { 
+                   // Still sync partial damage
+                   socketRef.current?.emit('unit_hit', { 
                        roomId: currentRoomRef.current?.id, 
                        targetPlayerId: e.id, 
                        damage: aoeD,
                        unitIndex: ui,
-                       attackerId: pr.ownerId === myId ? 'tower' : pr.ownerId,
+                       attackerId: pr.ownerId,
                        attackerName: nickname
                    });
                 }
@@ -4367,7 +4140,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   createDust(impactP!.x, impactP!.y, g.color);
                   if (pr.ownerId === myId) {
-                      socketProxyRef.current?.emit('unit_hit', { 
+                      socketRef.current?.emit('unit_hit', { 
                           roomId: currentRoomRef.current?.id, 
                           targetPlayerId: g.ownerId, 
                           damage: aoeD, 
@@ -4396,14 +4169,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   createDust(t.pos.x, t.pos.y, t.color);
                   
                   // Sync hit to everyone else
-                  socketProxyRef.current?.emit('building_hit', { 
+                  socketRef.current?.emit('building_hit', { 
                       roomId: currentRoomRef.current?.id, 
                       buildingId: t.id, 
                       hp: t.hp 
                   });
                   
                   if (t.hp <= 0 && oldHp > 0) {
-                      socketProxyRef.current?.emit('building_destroyed', { 
+                      socketRef.current?.emit('building_destroyed', { 
                           roomId: currentRoomRef.current?.id, 
                           buildingId: t.id 
                       });
@@ -4432,7 +4205,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
         
         // ONLY THE OWNER (or host for AI/neutral towers) triggers the shooting event
-        const isOwner = t.ownerId === myId || (socketProxyRef.current?.id && t.ownerId === socketProxyRef.current.id);
+        const isOwner = t.ownerId === myId || (socketRef.current?.id && t.ownerId === socketRef.current.id);
         const shouldCalculate = isOwner || (!isMultiplayer && (t.ownerId === 'ai' || !t.ownerId)) || (isMultiplayer && isHostRef.current && (t.ownerId === 'ai' || !t.ownerId));
         if (!shouldCalculate) continue;
 
@@ -4441,11 +4214,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           let minD = 400;
           let currentTargetStillValid = false;
 
-          // Check if current target is still valid (in range, alive, and NOT underground)
+          // Check if current target is still valid (in range and alive)
           if (t.currentTargetId) {
             // Check entities
             const targetEnt = entitiesRef.current.find(e => e.id === t.currentTargetId);
-            if (targetEnt && targetEnt.units.length > 0 && !targetEnt.isUnderground) {
+            if (targetEnt && targetEnt.units.length > 0) {
               const d = getDistance(t.pos, targetEnt.units[0].pos);
               if (d < 400) {
                 nearestPos = targetEnt.units[0].pos;
@@ -4456,7 +4229,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             // Check garrisons if no entity found
             if (!currentTargetStillValid) {
               const targetG = garrisonsRef.current.find(g => g.id === t.currentTargetId);
-              if (targetG && targetG.units.length > 0 && !targetG.isUnderground) {
+              if (targetG && targetG.units.length > 0) {
                 const d = getDistance(t.pos, targetG.pos);
                 if (d < 400) {
                   nearestPos = targetG.pos;
@@ -4510,23 +4283,19 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
           if (nearestPos) {
             t.lastShot = Date.now(); 
-            fireProjectile(t.ownerId, t.pos, nearestPos, t.color, t.empireId, t.currentTargetId || undefined);
+            fireProjectile(t.ownerId, t.pos, nearestPos, t.color, t.empireId);
           }
         }
       }
 
       // Building Attacks (Armies/Garrisons)
       entitiesRef.current.forEach(e => {
-        // --- UNDERGROUND ATTACK RULE (v2.9.4) ---
-        // Players UNDERGROUND can attack other things UNDERGROUND (like other players),
-        // but they CANNOT attack surface buildings (walls/towers).
-        if (e.units.length === 0 || e.hasHitInCurrentSwing || e.isUnderground) return; 
-        
+        if (e.units.length === 0 || e.hasHitInCurrentSwing) return;
         towersRef.current.forEach(t => {
           if (t.ownerId === e.id || t.faction === e.faction || (t.type as any) === 'tunnel') return;
           if (getDistance(e.units[0].pos, t.pos) < 60 && e.isAttacking && e.attackTimer < 250) {
             const oldHp = t.hp; t.hp = Math.max(0, t.hp - 1); createDust(t.pos.x, t.pos.y, t.color); e.hasHitInCurrentSwing = true;
-            if (t.hp <= 0 && oldHp > 0 && (e.id === myId || isHostRef.current)) socketProxyRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
+            if (t.hp <= 0 && oldHp > 0 && (e.id === myId || isHostRef.current)) socketRef.current?.emit('building_destroyed', { roomId: currentRoomRef.current?.id, buildingId: t.id });
           }
         });
       });
@@ -4539,7 +4308,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const newVillage = gameMapRef.current.futureVillages.shift();
             if (newVillage) {
               gameMapRef.current.villages.push(newVillage);
-              socketProxyRef.current?.emit('village_spawned', { 
+              socketRef.current?.emit('village_spawned', { 
                 roomId: currentRoomRef.current?.id, 
                 village: newVillage 
               });
@@ -4652,7 +4421,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       // --- CARAVAN REWRITE (Peaceful Escort) ---
       for (let i = caravansRef.current.length - 1; i >= 0; i--) {
         const c = caravansRef.current[i];
-        const sid = socketProxyRef.current?.id || myIdRef.current;
+        const sid = socketRef.current?.id || myIdRef.current;
         
         // Host-Authoritative Logic
         if (isHostRef.current) {
@@ -4737,7 +4506,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 const now = Date.now();
                 if (now - (c.lastAkceTime || 0) > 1000) { // Simple debounce
                     c.lastAkceTime = now;
-                    socketProxyRef.current?.emit('sync_data', { 
+                    socketRef.current?.emit('sync_data', { 
                         roomId: currentRoomRef.current?.id, 
                         caravanEscortRequest: c.id 
                     });
@@ -4774,7 +4543,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             createDust(nearbyGate.pos.x, nearbyGate.pos.y, '#fbbf24');
             
             // Sync with server
-            socketProxyRef.current?.emit('toggle_gate', { 
+            socketRef.current?.emit('toggle_gate', { 
                 roomId: currentRoomRef.current?.id, 
                 buildingId: nearbyGate.id, 
                 isOpen: nearbyGate.isOpen 
@@ -4808,7 +4577,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 createDust(nearbyGarrison.pos.x, nearbyGarrison.pos.y, nearbyGarrison.color);
                 
                 // Sync
-                socketProxyRef.current?.emit('garrison_destroyed', { 
+                socketRef.current?.emit('garrison_destroyed', { 
                     roomId: currentRoomRef.current?.id, 
                     garrisonId: nearbyGarrison.id, 
                     ownerId: myId 
@@ -4856,10 +4625,13 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     saveFinalStats(false);
                   }
 
+                  ENGINE_STATE = 'MATCH_RESULTS';
+                  setGameState('MATCH_RESULTS');
+                  gameStateRef.current = 'MATCH_RESULTS';
                   setIsSpectator(true);
                   
                   // Inform server
-                  socketProxyRef.current?.emit('commander_death_detected', { 
+                  socketRef.current?.emit('commander_death_detected', { 
                       roomId: currentRoomRef.current?.id, 
                       winnerId: null, 
                       loserId: myId 
@@ -4883,7 +4655,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         recentlyDestroyedGarrisons.current.set(g.id, Date.now());
         // Emit destroyed event regardless of ownership to ensure sync
         // If we killed a remote garrison, the owner MUST know so they stop hitting us
-        socketProxyRef.current?.emit('garrison_destroyed', { 
+        socketRef.current?.emit('garrison_destroyed', { 
             roomId: currentRoomRef.current?.id, 
             garrisonId: g.id, 
             ownerId: g.ownerId 
@@ -4940,7 +4712,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               kills: killsRef.current
             });
             
-            // Removed: local trigger. Only server decides via game_over_final.
+            ENGINE_STATE = 'MATCH_RESULTS';
+            setGameState('MATCH_RESULTS');
+            gameStateRef.current = 'MATCH_RESULTS';
             saveFinalStats(true);
             setIsSpectator(true);
         }
@@ -4948,22 +4722,37 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // LOCAL DEATH DETECTION (Robust server synchronization)
     if (ENGINE_STATE === 'GAME_ACTIVE' && !isSpectatorRef.current && p && p.units.length === 0) {
-        socketProxyRef.current?.emit('commander_death_detected', { 
+        socketRef.current?.emit('commander_death_detected', { 
             roomId: currentRoomRef.current?.id, 
             winnerId: null, 
             loserId: myId 
         });
 
-        // Set spectator mode immediately so we can keep watching the battle
-        setIsSpectator(true);
-        isSpectatorRef.current = true;
+        setMatchResult({ isWinner: false, winnerName: 'Enemy Commander' });
         
-        // Removed: ENGINE_STATE = 'MATCH_RESULTS'
-        // We wait for the server to send game_over_final to show the results screen
+        const endTime = Date.now();
+        endTimeRef.current = endTime;
+        const start = startTimeRef.current || (endTime - 1000);
+        const durationSecs = Math.floor((endTime - start) / 1000);
+        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
+        const secs = (durationSecs % 60).toString().padStart(2, '0');
+        
+        setMatchStats({
+          duration: `${mins}:${secs}`,
+          maxArmy: maxArmyRef.current,
+          towersBuilt: towersBuiltRef.current,
+          kills: killsRef.current
+        });
+        
+        ENGINE_STATE = 'MATCH_RESULTS';
+        setGameState('MATCH_RESULTS');
+        gameStateRef.current = 'MATCH_RESULTS';
+        saveFinalStats(false);
+        setIsSpectator(true);
     }
 
     // Network Sync (33Hz for better combat accuracy)
-    if (isMultiplayer && p && socketProxyRef.current && currentRoomRef.current && !isSpectatorRef.current && canEmitNetworkEvent('move_update')) {
+    if (isMultiplayer && p && socketRef.current && currentRoomRef.current && (Date.now() - lastSyncTimeRef.current > 30) && !isSpectatorRef.current) {
       lastSyncTimeRef.current = Date.now();
       
       // SYNC GARRISONS: Owner sends their own, Host sends AI-owned
@@ -4978,7 +4767,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           empireId: g.empireId, 
           color: g.color, 
           attackTimer: g.attackTimer,
-          isUnderground: g.isUnderground // SYNC LAYER
+          isUnderground: g.isUnderground // NEW: Layer sync
         }));
 
       // SYNC CARAVANS: Only host sends the caravan state to everyone
@@ -4992,7 +4781,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           lastSyncPos: c.pos // Added current pos as lastSyncPos for others
       })) : undefined;
 
-      socketProxyRef.current.emit('sync_data', {
+      socketRef.current.emit('sync_data', {
         roomId: currentRoomRef.current.id, 
         id: myId, 
         x: p.units[0]?.pos.x || 0, 
@@ -5034,6 +4823,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     const cv = canvasRef.current, ctx = cv?.getContext('2d'); if (!cv || !ctx) return;
 
     const VISION_RADIUS = 900; // Increased radius for smoother gameplay
+    const getDistanceSimple = (x1: number, y1: number, x2: number, y2: number) => {
+      return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+    };
 
     // Pre-calculated view bounds for faster culling
     const viewBounds = {
@@ -5050,7 +4842,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     };
 
     const render = () => {
-      try {
       const w = window.innerWidth, h = window.innerHeight;
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
       
@@ -5096,12 +4887,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       ctx.lineWidth = 10;
       ctx.strokeRect(0, 0, currentWorldSize, currentWorldSize);
 
-      const localHeadPos = playerRef.current?.units && playerRef.current.units.length > 0 ? playerRef.current.units[0].pos : null;
+      const localHeadPos = playerRef.current?.units[0]?.pos;
 
       // Protection Circles (Drawn below everything)
       caravansRef.current.forEach(c => {
-        if (!c || !c.pos) return;
-        const sid = socketProxyRef.current?.id || myIdRef.current;
+        const sid = socketRef.current?.id || myIdRef.current;
         if (c.escortOwnerId === sid) {
            const ESCORT_RADIUS = 250;
            ctx.save();
@@ -5121,36 +4911,609 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
       });
 
-      // Obstacles (Base layer)
-      gameMapRef.current.obstacles.forEach(obstacle => {
-        GameRenderer.drawObstacle(ctx, obstacle, isPointInView);
-      });
+      towersRef.current.forEach(t => {
+        if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
+        
+        const p = playerRef.current;
+        const isTunnel = (t.type as any) === 'tunnel';
 
-      // Tunnels (Separate from buildings)
-      tunnelsRef.current.forEach(tunnel => {
-        GameRenderer.drawTunnel(ctx, tunnel, {
-          isPointInView,
-          localHeadPos,
-          visionRadius: VISION_RADIUS,
-          myId,
-          isSpectator: isSpectatorRef.current
-        });
-      });
+        // NEW: Layer Isolation for buildings
+        // If underground, ONLY draw tunnels. Hide walls/gates/towers.
+        if (p?.isUnderground && !isTunnel) return;
 
-      towersRef.current.forEach(building => {
-        GameRenderer.drawBuilding(ctx, building, {
-          isPointInView,
-          localHeadPos,
-          visionRadius: VISION_RADIUS,
-          myId,
-          isSpectator: isSpectatorRef.current,
-          currentPlayer: playerRef.current,
-          entities: entitiesRef.current,
-          buildingMap: buildingMapRef.current
-        });
+        // Fog of War: Hide enemy buildings if too far (unless spectator)
+        if (!isSpectatorRef.current && localHeadPos) {
+          const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+          if (d > VISION_RADIUS && t.ownerId !== myId) return;
+        }
+
+        ctx.save();
+        ctx.translate(t.pos.x, t.pos.y);
+        
+        if (isTunnel) {
+            // --- DRAW TUNNEL (HOLE) ---
+            ctx.fillStyle = '#3e2723'; // Dark dirt
+            ctx.beginPath(); ctx.ellipse(0, 0, 40, 25, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#4e342e'; // Lighter dirt detail
+            ctx.beginPath(); ctx.ellipse(0, 0, 25, 15, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(0,0,0,0.7)'; // Hole
+            ctx.beginPath(); ctx.ellipse(0, 0, 15, 8, 0, 0, Math.PI * 2); ctx.fill();
+
+            // Interaction Hint (Match Gate Style)
+            if (localHeadPos && gameState === 'GAME_ACTIVE') {
+              const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+              if (dist < 300) {
+                const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+                const isOwner = t.ownerId === myId || t.ownerId === playerRef.current?.id;
+                
+                ctx.save();
+                // 1. [F] ENTER/EXIT Bubble
+                ctx.fillStyle = 'rgba(0,0,0,0.85)';
+                ctx.beginPath();
+                ctx.rect(-45, -85, 90, 24);
+                ctx.fill();
+                ctx.strokeStyle = '#fbbf24';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+
+                if (isMobile) {
+                  ctx.fillStyle = '#fbbf24';
+                  ctx.font = 'bold 10px Inter, sans-serif';
+                  ctx.textAlign = 'center';
+                  ctx.fillText('TAP TO ' + (p?.isUnderground ? 'EXIT' : 'ENTER'), 0, -68);
+                } else {
+                  ctx.fillStyle = '#fbbf24';
+                  ctx.font = 'bold 14px Inter, sans-serif';
+                  ctx.textAlign = 'center';
+                  ctx.fillText('F', -30, -68);
+                  ctx.fillStyle = '#ffffff';
+                  ctx.font = '10px Inter, sans-serif';
+                  ctx.textAlign = 'left';
+                  ctx.fillText(p?.isUnderground ? 'EXIT' : 'ENTER', -15, -68);
+                }
+
+                // 2. [R] HIDE Bubble (Only for owner)
+                if (isOwner) {
+                  ctx.translate(0, -30);
+                  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+                  ctx.beginPath();
+                  ctx.rect(-45, -85, 90, 24);
+                  ctx.fill();
+                  ctx.strokeStyle = '#ef4444';
+                  ctx.lineWidth = 1;
+                  ctx.stroke();
+
+                  if (isMobile) {
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = 'bold 10px Inter, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('TAP TO HIDE', 0, -68);
+                  } else {
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = 'bold 14px Inter, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('R', -30, -68);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = '10px Inter, sans-serif';
+                    ctx.textAlign = 'left';
+                    ctx.fillText('HIDE', -15, -68);
+                  }
+                }
+                ctx.restore();
+              }
+            }
+            ctx.restore();
+            return; // Skip the rest of building drawing for tunnels
+        }
+
+        // Auto-detect empire style if missing or neutral (rendering safety)
+        let renderEmpireId = t.empireId;
+        if (!renderEmpireId || renderEmpireId === 'neutral') {
+          const owner = entitiesRef.current.find(e => e.id === t.ownerId || e.color === t.color);
+          if (owner) renderEmpireId = owner.empireId;
+        }
+
+        if (t.type === 'wall') {
+            const gx = Math.round(t.pos.x / GRID_SIZE);
+            const gy = Math.round(t.pos.y / GRID_SIZE);
+            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
+            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
+            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
+            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
+
+            if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
+
+            const isH = (t.rotation || 0) === 0;
+            const hasPrev = isH ? (n_l && (n_l.type==='wall' || n_l.type==='gate')) : (n_t && (n_t.type==='wall' || n_t.type==='gate'));
+            const hasNext = isH ? (n_r && (n_r.type==='wall' || n_r.type==='gate')) : (n_b && (n_b.type==='wall' || n_b.type==='gate'));
+
+            // Exact boundaries: 35 is grid edge, 55 is overlap into neighbor
+            const drawStart = hasPrev ? -55 : -35;
+            const drawEnd = hasNext ? 55 : 35;
+            const drawLen = drawEnd - drawStart;
+
+            if (renderEmpireId === 'rim') {
+              // --- Russian Palisade (Засека) ---
+              ctx.fillStyle = '#4e342e';
+              ctx.fillRect(drawStart, -15, drawLen, 30);
+              
+              // Log Pattern
+              ctx.fillStyle = '#5d4037';
+              const logWidth = 10;
+              const startLog = Math.floor(drawStart / logWidth);
+              const endLog = Math.ceil(drawEnd / logWidth);
+              for(let i = startLog; i < endLog; i++) {
+                const x = i * logWidth;
+                const h = 20 + Math.sin(i * 1.5) * 5;
+                ctx.beginPath();
+                ctx.moveTo(x + 1, -15);
+                ctx.lineTo(x + 5, -15 - h);
+                ctx.lineTo(x + 9, -15);
+                ctx.fill();
+              }
+              // Iron Reinforcement Bands
+              ctx.fillStyle = '#334155';
+              ctx.fillRect(drawStart, -5, drawLen, 4);
+              ctx.fillRect(drawStart, 10, drawLen, 4);
+            } else if (renderEmpireId === 'fim') {
+              // --- French Bastion Wall (Stone & Iron) ---
+              ctx.fillStyle = '#cbd5e1';
+              ctx.fillRect(drawStart, -18, drawLen, 36);
+              // Stone texture (repeating every 14px)
+              ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
+              const step = 14;
+              const sIdx = Math.floor(drawStart / step);
+              const eIdx = Math.ceil(drawEnd / step);
+              for(let i = sIdx; i <= eIdx; i++) {
+                ctx.beginPath(); ctx.moveTo(i*step, -18); ctx.lineTo(i*step, 18); ctx.stroke();
+              }
+              ctx.beginPath(); ctx.moveTo(drawStart, 0); ctx.lineTo(drawEnd, 0); ctx.stroke();
+              // Golden Top Railing
+              ctx.fillStyle = '#fbbf24';
+              ctx.fillRect(drawStart, -22, drawLen, 4);
+            } else {
+              // --- Ottoman Sandstone Wall ---
+              ctx.fillStyle = '#d4a373';
+              ctx.fillRect(drawStart, -15, drawLen, 35);
+              // Islamic Geometric Pattern
+              ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1.5;
+              const step = 15;
+              const sIdx = Math.floor(drawStart / step);
+              const eIdx = Math.ceil(drawEnd / step);
+              for(let i = sIdx; i <= eIdx; i++) {
+                ctx.save(); ctx.translate(i*step, 5); ctx.rotate(Math.PI/4); ctx.strokeRect(-4, -4, 8, 8); ctx.restore();
+              }
+              // Battlements
+              ctx.fillStyle = '#bc8a5f';
+              const bStep = 20;
+              const bsIdx = Math.floor(drawStart / bStep);
+              const beIdx = Math.ceil(drawEnd / bStep);
+              for(let i = bsIdx; i < beIdx; i++) {
+                ctx.fillRect(i*bStep + 3, -25, 14, 10);
+              }
+            }
+            
+            // Faction Accent (Always centered)
+            ctx.fillStyle = t.color;
+            ctx.fillRect(-10, 5, 20, 5);
+
+            // DRAW JOINTS FOR PERPENDICULAR CORNERS (Bridge the 20px gap)
+            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Back to world space
+            const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
+            const thickness = renderEmpireId === 'fim' ? 36 : 30;
+            const halfThick = thickness / 2;
+
+            if (isH) {
+              if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, -35, thickness, 20); // Bridge Up (15 to 35)
+              }
+              if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, 15, thickness, 20); // Bridge Down (15 to 35)
+              }
+            } else {
+              if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-35, -halfThick, 20, thickness); // Bridge Left
+              }
+              if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(15, -halfThick, 20, thickness); // Bridge Right
+              }
+            }
+            ctx.rotate((t.rotation || 0) * Math.PI / 180); // Restore rotation for HUD
+
+            // Health Bar (Wall) - Fixed clamping and added Shield Icon
+            ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate for HUD
+            const maxHp = (t.type === 'tower') ? TOWER_MAX_HP : (t.type === 'gate' ? GATE_MAX_HP : WALL_MAX_HP);
+            if (t.hp < maxHp - 0.01) { // Show immediately after first hit
+              const bWidth = 50;
+              const hRatio = Math.max(0, Math.min(1, t.hp / maxHp));
+              const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
+              ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-25, -45, bWidth, 6);
+              ctx.fillStyle = '#ef4444'; ctx.fillRect(-25, -45, bWidth, 6);
+              ctx.fillStyle = '#22c55e'; ctx.fillRect(-25, -45, clampedW, 6);
+              
+              // HP TEXT (e.g. "9 / 10")
+              ctx.font = 'bold 12px Inter, sans-serif';
+              ctx.fillStyle = '#ffffff';
+              ctx.textAlign = 'center';
+              ctx.shadowBlur = 4; ctx.shadowColor = 'black';
+              ctx.fillText(`${Math.ceil(t.hp)} / ${maxHp}`, 0, -55);
+              ctx.shadowBlur = 0;
+
+              ctx.font = '10px Inter';
+              ctx.textAlign = 'right';
+              ctx.fillText('🛡️', -28, -40);
+            }
+            ctx.rotate((t.rotation || 0) * Math.PI / 180); // Re-rotate for cracks
+
+            // Cracked Texture (Wall)
+            if (t.hp <= 20) {
+              ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)'; ctx.lineWidth = 2;
+              ctx.beginPath(); ctx.moveTo(-20, -10); ctx.lineTo(-10, 5); ctx.lineTo(0, -5); ctx.stroke();
+              ctx.beginPath(); ctx.moveTo(10, 5); ctx.lineTo(20, -10); ctx.stroke();
+            }
+          } else if (t.type === 'gate') {
+            const gx = Math.round(t.pos.x / GRID_SIZE);
+            const gy = Math.round(t.pos.y / GRID_SIZE);
+            const n_t = buildingMapRef.current.get(`${gx}_${gy-1}`);
+            const n_b = buildingMapRef.current.get(`${gx}_${gy+1}`);
+            const n_l = buildingMapRef.current.get(`${gx-1}_${gy}`);
+            const n_r = buildingMapRef.current.get(`${gx+1}_${gy}`);
+
+            if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
+            
+            if (renderEmpireId === 'rim') {
+              // --- Russian Log Gate (Теремные Ворота) ---
+              // Massive Side Pillars (Logs)
+              ctx.fillStyle = '#3e2723';
+              ctx.fillRect(-35, -25, 12, 50); // Left log
+              ctx.fillRect(23, -25, 12, 50);  // Right log
+              
+              // Roof (Upper beam)
+              ctx.fillStyle = '#2b1d1a';
+              ctx.beginPath();
+              ctx.moveTo(-38, -25); ctx.lineTo(0, -40); ctx.lineTo(38, -25); ctx.lineTo(38, -18); ctx.lineTo(-38, -18);
+              ctx.fill();
+
+              if (!t.isOpen) {
+                // Main Door Panel
+                ctx.fillStyle = '#4e342e';
+                ctx.fillRect(-23, -22, 46, 44);
+                
+                // Vertical Log Texture on door
+                ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1;
+                for(let i=-2; i<=2; i++) {
+                  ctx.beginPath(); ctx.moveTo(i*9, -22); ctx.lineTo(i*9, 22); ctx.stroke();
+                }
+
+                // Iron Forged Elements (Decorative Crossbars)
+                ctx.fillStyle = '#1e293b';
+                ctx.fillRect(-23, -10, 46, 3);
+                ctx.fillRect(-23, 10, 46, 3);
+                
+                // Iron Bolts (Rivets)
+                ctx.fillStyle = '#334155';
+                for(let i=-2; i<=2; i++) {
+                  ctx.beginPath(); ctx.arc(i*15, -10, 2, 0, Math.PI*2); ctx.fill();
+                  ctx.beginPath(); ctx.arc(i*15, 10, 2, 0, Math.PI*2); ctx.fill();
+                }
+
+                // Golden Ring Handles
+                ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(-8, 5, 5, 0, Math.PI*2); ctx.stroke();
+                ctx.beginPath(); ctx.arc(8, 5, 5, 0, Math.PI*2); ctx.stroke();
+              } else {
+                // OPENED: Show hollow passage with depth
+                ctx.save();
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.fillRect(-21, -22, 42, 44);
+                ctx.restore();
+                
+                // Draw inner frame shadows
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                ctx.fillRect(-23, -22, 2, 44);
+                ctx.fillRect(21, -22, 2, 44);
+              }
+            } else if (renderEmpireId === 'fim') {
+              // --- French Iron Gate (Портал) ---
+              // Ornate Stone Pillars with Blue Slate tops
+              ctx.fillStyle = '#94a3b8';
+              ctx.fillRect(-DRAW_LENGTH/2, -25, 14, 50); ctx.fillRect(DRAW_LENGTH/2-14, -25, 14, 50);
+              
+              if (!t.isOpen) {
+                ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2.5;
+                for(let i=-4; i<=4; i++) {
+                  ctx.beginPath(); ctx.moveTo(i*(DRAW_LENGTH/10), -20); ctx.lineTo(i*(DRAW_LENGTH/10), 20); ctx.stroke();
+                }
+              } else {
+                ctx.save();
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.fillRect(-(DRAW_LENGTH-28)/2, -20, DRAW_LENGTH-28, 40);
+                ctx.restore();
+              }
+            } else {
+              // --- Ottoman Stone Arch Gate ---
+              ctx.fillStyle = '#d4a373';
+              ctx.beginPath(); ctx.moveTo(-DRAW_LENGTH/2, 25); ctx.lineTo(-DRAW_LENGTH/2, -15); ctx.quadraticCurveTo(0, -45, DRAW_LENGTH/2, -15); ctx.lineTo(DRAW_LENGTH/2, 25); ctx.fill();
+              
+              if (!t.isOpen) {
+                // CLOSED: Solid Wooden Door with Iron Accents
+                ctx.fillStyle = '#4a2511'; // Dark rich wood
+                ctx.fillRect(-(DRAW_LENGTH-12)/2, -15, DRAW_LENGTH-12, 38);
+                
+                // Iron Bands for reinforcement
+                ctx.fillStyle = '#1e293b'; // Slate dark iron
+                ctx.fillRect(-(DRAW_LENGTH-12)/2, -5, DRAW_LENGTH-12, 3);
+                ctx.fillRect(-(DRAW_LENGTH-12)/2, 10, DRAW_LENGTH-12, 3);
+                
+                // Decorative handle/ring
+                ctx.strokeStyle = '#fbbf24'; // Gold/Brass
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(0, 5, 6, 0, Math.PI * 2);
+                ctx.stroke();
+              } else {
+                ctx.save();
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.beginPath(); ctx.moveTo(-(DRAW_LENGTH-16)/2, 25); ctx.lineTo(-(DRAW_LENGTH-16)/2, -10); ctx.quadraticCurveTo(0, -35, (DRAW_LENGTH-16)/2, -10); ctx.lineTo((DRAW_LENGTH-16)/2, 25); ctx.fill();
+                ctx.restore();
+              }
+            }
+            
+            // DRAW JOINTS FOR GATES TOO (Perfect tile joints)
+            ctx.rotate(-(t.rotation || 0) * Math.PI / 180);
+            const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
+            const jSize = renderEmpireId === 'fim' ? 36 : 30;
+            const halfWall = DRAW_LENGTH / 2;
+            const halfThick = jSize / 2;
+            const offset = GRID_SIZE / 2;
+
+            if (t.rotation === 0) {
+              if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, -offset - halfThick, jSize, jSize);
+              }
+              if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-halfThick, offset - halfThick, jSize, jSize);
+              }
+              // Clean L-junction overlaps for gates
+              if (!n_l && (n_t || n_b)) {
+                 ctx.fillStyle = jointColor;
+                 ctx.fillRect(-halfWall, -halfThick, halfWall - halfThick, jSize);
+              }
+              if (!n_r && (n_t || n_b)) {
+                 ctx.fillStyle = jointColor;
+                 ctx.fillRect(halfThick, -halfThick, halfWall - halfThick, jSize);
+              }
+            } else {
+              if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(-offset - halfThick, -halfThick, jSize, jSize);
+              }
+              if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
+                ctx.fillStyle = jointColor;
+                ctx.fillRect(offset - halfThick, -halfThick, jSize, jSize);
+              }
+            }
+            ctx.rotate((t.rotation || 0) * Math.PI / 180);
+            
+            // Faction Banner on top
+            ctx.fillStyle = t.color;
+            ctx.fillRect(-10, -30, 20, 10);
+            
+            // Interaction Hint (Press F to Open/Close) - Only for owner
+            if (localHeadPos && (t.ownerId === myId || t.color === playerRef.current?.color || t.faction === playerRef.current?.color)) {
+                const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+                if (dist < 150) {
+                    const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+                    ctx.save();
+                    ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate to draw text horizontally
+                    
+                    // Bubble background
+                    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+                    ctx.beginPath();
+                    ctx.rect(-45, -85, 90, 24);
+                    ctx.fill();
+                    ctx.strokeStyle = '#fbbf24';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+
+                    if (isMobile) {
+                        ctx.fillStyle = '#fbbf24';
+                        ctx.font = 'bold 10px Inter, sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('TAP TO ' + (t.isOpen ? 'CLOSE' : 'OPEN'), 0, -68);
+                    } else {
+                        // Key hint
+                        ctx.fillStyle = '#fbbf24';
+                        ctx.font = 'bold 14px Inter, sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('F', -30, -68);
+                        
+                        // Action text
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = '10px Inter, sans-serif';
+                        ctx.textAlign = 'left';
+                        ctx.fillText(t.isOpen ? 'CLOSE' : 'OPEN', -15, -68);
+                    }
+                    
+                    ctx.restore();
+                }
+            }
+            
+            // Un-rotate for health bar
+            ctx.rotate(-(t.rotation || 0) * Math.PI / 180);
+            const maxHp = (t.type === 'tower') ? TOWER_MAX_HP : (t.type === 'gate' ? GATE_MAX_HP : WALL_MAX_HP);
+            if (t.hp < maxHp - 0.01) {
+              const bWidth = 50;
+              const hRatio = Math.max(0, Math.min(1, t.hp / maxHp));
+              const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
+              ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-25, -45, bWidth, 6);
+              ctx.fillStyle = '#ef4444'; ctx.fillRect(-25, -45, bWidth, 6);
+              ctx.fillStyle = '#22c55e'; ctx.fillRect(-25, -45, clampedW, 6);
+              
+              // HP TEXT (e.g. "9 / 10")
+              ctx.font = 'bold 12px Inter, sans-serif';
+              ctx.fillStyle = '#ffffff';
+              ctx.textAlign = 'center';
+              ctx.shadowBlur = 4; ctx.shadowColor = 'black';
+              ctx.fillText(`${Math.ceil(t.hp)} / ${maxHp}`, 0, -55);
+              ctx.shadowBlur = 0;
+
+              ctx.font = '10px Inter';
+              ctx.textAlign = 'right';
+              ctx.fillText('🛡️', -28, -40);
+            }
+          } else if (t.type === 'tower' || !t.type) {
+            if (renderEmpireId === 'rim') {
+              // --- Russian Krepost (Fortress) ---
+              // 1. Log Base
+              ctx.fillStyle = '#5d4037';
+              ctx.fillRect(-35, -50, 70, 70);
+              // Log texture
+              ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1.5;
+              for(let i=0; i<4; i++) {
+                ctx.beginPath(); ctx.moveTo(-35, -50 + i*17.5); ctx.lineTo(35, -50 + i*17.5); ctx.stroke();
+              }
+
+              // 2. Wooden Overhang
+              ctx.fillStyle = '#4e342e';
+              ctx.fillRect(-42, -60, 84, 15);
+              
+              // 3. Green Pointed Roof
+              ctx.fillStyle = '#1b4332'; // Dark green roof
+              ctx.beginPath();
+              ctx.moveTo(-45, -60);
+              ctx.lineTo(0, -110);
+              ctx.lineTo(45, -60);
+              ctx.fill();
+
+              // 4. Spire with Cross
+              ctx.fillStyle = '#fbbf24'; // Gold
+              ctx.fillRect(-1, -125, 2, 15);
+              ctx.fillRect(-4, -120, 8, 2); // Horizontal cross bar
+              ctx.fillRect(-1, -115, 2, 5);
+
+            } else if (renderEmpireId === 'fim') {
+              // --- French Bastion ---
+              // 1. Gray Stone Base
+              ctx.fillStyle = '#94a3b8';
+              ctx.fillRect(-35, -50, 70, 70);
+              // Stone texture (bricks)
+              ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1;
+              for(let i=0; i<4; i++) {
+                ctx.beginPath(); ctx.moveTo(-35, -50 + i*17.5); ctx.lineTo(35, -50 + i*17.5); ctx.stroke();
+              }
+
+              // 2. Balcony
+              ctx.fillStyle = '#cbd5e1';
+              ctx.fillRect(-40, -60, 80, 10);
+
+              // 3. Blue Slate Roof
+              ctx.fillStyle = '#1e3a8a'; // Deep blue roof
+              ctx.beginPath();
+              ctx.moveTo(-40, -60);
+              ctx.lineTo(-25, -95);
+              ctx.lineTo(25, -95);
+              ctx.lineTo(40, -60);
+              ctx.fill();
+              
+              // Upper roof tip
+              ctx.beginPath();
+              ctx.moveTo(-25, -95);
+              ctx.lineTo(0, -120);
+              ctx.lineTo(25, -95);
+              ctx.fill();
+
+              // 4. Tricolor Flag
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, -140, 2, 20); // Pole
+              // Blue/White/Red Flag
+              ctx.fillStyle = '#002395'; ctx.fillRect(2, -140, 6, 10);
+              ctx.fillStyle = '#ffffff'; ctx.fillRect(8, -140, 6, 10);
+              ctx.fillStyle = '#ed2939'; ctx.fillRect(14, -140, 6, 10);
+
+            } else {
+              // --- Ottoman Tower (Original) ---
+              // 1. Stone Base (Sandstone)
+              ctx.fillStyle = '#d4a373'; 
+              ctx.fillRect(-35, -50, 70, 70);
+              // Stone Texture
+              ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1;
+              for(let i=0; i<3; i++) {
+                ctx.beginPath(); ctx.moveTo(-35, -50 + i*23); ctx.lineTo(35, -50 + i*23); ctx.stroke();
+              }
+
+              // 2. Wooden Balcony
+              ctx.fillStyle = '#451a03';
+              ctx.fillRect(-40, -60, 80, 15);
+              // Balcony railing
+              ctx.strokeStyle = '#78350f'; ctx.lineWidth = 2;
+              for(let i=0; i<8; i++) {
+                ctx.beginPath(); ctx.moveTo(-35 + i*10, -60); ctx.lineTo(-35 + i*10, -45); ctx.stroke();
+              }
+
+              // 3. Faction Banner
+              ctx.fillStyle = t.color;
+              ctx.fillRect(-15, -45, 30, 10);
+
+              // 4. Upper Tower Section
+              ctx.fillStyle = '#faedcd';
+              ctx.fillRect(-25, -90, 50, 30);
+
+              // 5. Teal/Gold Dome
+              ctx.fillStyle = '#0d9488'; // Teal
+              ctx.beginPath();
+              ctx.arc(0, -90, 30, Math.PI, 0);
+              ctx.fill();
+              
+              // Dome spike
+              ctx.fillStyle = '#fbbf24';
+              ctx.fillRect(-1, -135, 2, 15);
+
+              // Golden Crescent
+              ctx.save();
+              ctx.translate(0, -135);
+              ctx.fillStyle = '#fbbf24';
+              ctx.beginPath();
+              ctx.arc(0, 0, 6, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.globalCompositeOperation = 'destination-out';
+              ctx.beginPath();
+              ctx.arc(3, -2, 6, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            }
+
+            // Health Bar (Tower) - Fixed clamping and added Shield Icon
+            if (t.hp < TOWER_MAX_HP - 0.01) {
+              const bWidth = 60;
+              const hRatio = Math.max(0, Math.min(1, t.hp / TOWER_MAX_HP));
+              const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
+              ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-30, -155, bWidth, 7);
+              ctx.fillStyle = '#ef4444'; ctx.fillRect(-30, -155, bWidth, 7);
+              ctx.fillStyle = '#22c55e'; ctx.fillRect(-30, -155, clampedW, 7);
+              
+              // HP TEXT
+              ctx.font = 'bold 12px Inter, sans-serif';
+              ctx.fillStyle = '#ffffff';
+              ctx.textAlign = 'center';
+              ctx.shadowBlur = 4; ctx.shadowColor = 'black';
+              ctx.fillText(`${Math.ceil(t.hp)} / ${TOWER_MAX_HP}`, 0, -165);
+              ctx.shadowBlur = 0;
+
+              ctx.font = '12px Inter';
+              ctx.textAlign = 'right';
+              ctx.fillText('🛡️', -35, -148);
+            }
+          }
+          ctx.restore();
       });
       projectilesRef.current.forEach(pr => {
-        if (!pr || !pr.pos) return;
         if (!isPointInView(pr.pos.x, pr.pos.y, 100)) return;
         const px = pr.pos.x, py = pr.pos.y;
         
@@ -5207,6 +5570,35 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             ctx.fillRect(rx, ry, 2, 2);
           }
       }
+
+      // Obstacles (Base layer)
+      gameMapRef.current.obstacles.forEach(o => {
+          if (!isPointInView(o.center.x, o.center.y, o.radius + 150)) return;
+          const ox = o.center.x, oy = o.center.y;
+          
+          if (o.type === 'grass') {
+              ctx.fillStyle = 'rgba(20, 83, 45, 0.4)';
+              ctx.beginPath(); ctx.arc(ox, oy, o.radius, 0, Math.PI * 2); ctx.fill();
+              ctx.strokeStyle = 'rgba(34, 197, 94, 0.2)'; ctx.lineWidth = 4; ctx.stroke();
+          } else if (o.type === 'tree') {
+              // Trunk shadow
+              ctx.fillStyle = 'rgba(0,0,0,0.3)';
+              ctx.beginPath(); ctx.ellipse(ox, oy + 25, 20, 10, 0, 0, Math.PI * 2); ctx.fill();
+              // Thick Trunk
+              ctx.fillStyle = '#451a03';
+              ctx.fillRect(ox - 12, oy - 10, 24, 40);
+              ctx.strokeStyle = '#78350f'; ctx.lineWidth = 2; ctx.strokeRect(ox - 12, oy - 10, 24, 40);
+          } else if (o.type === 'boulder' && o.points) {
+              // Boulder shadow
+              ctx.fillStyle = 'rgba(0,0,0,0.2)';
+              ctx.beginPath(); ctx.ellipse(ox, oy + o.radius * 0.3, o.radius * 1.1, o.radius * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+              // Boulder
+              ctx.fillStyle = o.color;
+              ctx.beginPath(); o.points.forEach((pt, i) => { if (i===0) ctx.moveTo(pt.x, pt.y); else ctx.lineTo(pt.x, pt.y); });
+              ctx.closePath(); ctx.fill();
+              ctx.strokeStyle = '#334155'; ctx.lineWidth = 2; ctx.stroke();
+          }
+      });
 
       // --- Draw Villages ---
       gameMapRef.current.villages.forEach(v => {
@@ -5307,7 +5699,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // --- RENDER CARAVANS REWRITE ---
       caravansRef.current.forEach(c => {
-        if (!c || !c.pos) return;
         if (!isPointInView(c.pos.x, c.pos.y, 100)) return;
         // NEW: Layer isolation for Caravans (Surface only)
         if (!isSpectatorRef.current && playerRef.current?.isUnderground) return;
@@ -5316,12 +5707,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ctx.translate(c.pos.x, c.pos.y);
         
         // Draw Escort Circle
-        const sid = socketProxyRef.current?.id || myIdRef.current;
+        const sid = socketRef.current?.id || myIdRef.current;
         const isMeEscorting = c.escortOwnerId === sid;
 
-        const pHead = playerRef.current?.units && playerRef.current.units.length > 0 ? playerRef.current.units[0] : null;
-
-        if (isMeEscorting || (!c.escortOwnerId && pHead && getDistance(c.pos, pHead.pos) < 400)) {
+        if (isMeEscorting || (!c.escortOwnerId && playerRef.current && getDistance(c.pos, playerRef.current.units[0]?.pos) < 400)) {
             ctx.beginPath();
             ctx.arc(0, 0, 250, 0, Math.PI * 2);
             ctx.fillStyle = isMeEscorting ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 255, 255, 0.05)';
@@ -5394,6 +5783,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             }
         } else {
             // Display "Press F" hint
+            const pHead = playerRef.current?.units[0];
             if (pHead && getDistance(c.pos, pHead.pos) < 250) {
                 const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
                 ctx.save();
@@ -5441,7 +5831,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Neutrals
       neutralsRef.current.forEach(n => {
-        if (!n || !n.pos) return;
         if (!isPointInView(n.pos.x, n.pos.y, 100)) return;
         // NEW: Layer isolation for Neutrals (Holops are surface only)
         if (!isSpectatorRef.current && playerRef.current?.isUnderground) return;
@@ -5457,7 +5846,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
 
       garrisonsRef.current.forEach(g => {
-          if (!g || !g.pos || !g.units || g.units.length === 0) return;
           if (isPointInView(g.pos.x, g.pos.y, 300)) {
                // NEW: Layer Isolation for Garrisons
                if (!isSpectatorRef.current && g.isUnderground !== playerRef.current?.isUnderground) {
@@ -5476,7 +5864,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                ctx.globalAlpha = opacity;
 
                g.units.forEach((u, i) => {
-                  if (!u || !u.pos || !isPointInView(u.pos.x, u.pos.y, 100)) return;
+                  if (!isPointInView(u.pos.x, u.pos.y, 100)) return;
 
                   if (!isAttacking) {
                     // Use sprite for all non-attacking units (BATCH-LIKE)
@@ -5489,7 +5877,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               
               if (g.mode === 'RECALL') {
                   const owner = entitiesRef.current.find(e => e.id === g.ownerId);
-                  if (owner && owner.units && owner.units.length > 0 && owner.units[0].pos) {
+                  if (owner && owner.units.length > 0) {
                       ctx.setLineDash([5, 5]);
                       ctx.strokeStyle = 'rgba(255,255,255,0.3)';
                       ctx.beginPath();
@@ -5545,7 +5933,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               ctx.shadowBlur = 0;
 
               // REJOIN PROMPT
-              if (g.ownerId === myId && localHeadPos && getDistanceXY(g.pos.x, g.pos.y, localHeadPos.x, localHeadPos.y) < 150) {
+              if (g.ownerId === myId && localHeadPos && getDistanceSimple(g.pos.x, g.pos.y, localHeadPos.x, localHeadPos.y) < 150) {
                   const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
                   ctx.fillStyle = 'rgba(0,0,0,0.85)';
                   ctx.beginPath();
@@ -5571,7 +5959,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       
       // If in lobby and local player is missing from entitiesRef for some reason, we draw them anyway
       if (ENGINE_STATE === 'LOBBY_WAITING' && !drawEntities.find(e => e.id === myId)) {
-          const sid = socketProxyRef.current?.id || myId;
+          const sid = socketRef.current?.id || myId;
           drawEntities.push({
             id: sid,
             name: nickname,
@@ -5593,45 +5981,30 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
 
       drawEntities.forEach(ent => {
-          if (!ent || !ent.units || ent.units.length === 0) return;
+          if (ent.units.length === 0) return;
           const head = ent.units[0];
-          if (!head || !head.pos) return;
           
-          // NEW: 100% Stealth Isolation - Underground visibility logic
-          const p = playerRef.current;
-          const sid = socketProxyRef.current?.id || myId;
-          const isLocal = ent.id === sid;
-          
-          let opacity = 1.0;
-          let hideName = false;
-
-          // --- UNDERGROUND VISIBILITY REWRITE (v2.9.4) ---
-          if (isLocal) {
-            if (ent.isUnderground) opacity = 0.5; // I see myself transparent when underground
-          } else {
-            const iAmUnderground = p?.isUnderground || false;
-            const enemyIsUnderground = ent.isUnderground || false;
-
-            if (iAmUnderground && enemyIsUnderground) {
-              opacity = 1.0; // BOTH UNDERGROUND: Full visibility!
-              hideName = false;
-            } else if (!iAmUnderground && enemyIsUnderground) {
-              opacity = 0; // I AM ON SURFACE, ENEMY UNDERGROUND: Invisible
-              hideName = true;
-            } else if (iAmUnderground && !enemyIsUnderground) {
-              opacity = 0.3; // I AM UNDERGROUND, ENEMY ON SURFACE: Ghostly/Semi-transparent
-              hideName = true;
-            }
-          }
-
-          if (opacity <= 0) return; // SKIP RENDERING INVISIBLE UNITS
-
           if (!isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER * 2)) return;
 
-          // Fog of War: Grass logic
+          // NEW: Layer Isolation - Only see units in the same layer
+          const p = playerRef.current;
+          if (!isSpectatorRef.current && ent.isUnderground !== p?.isUnderground) {
+            return; // Invisible across layers
+          }
+
+          // Fog of War: Hide underground enemy units unless we are also underground
+          const sid = socketRef.current?.id || myId;
+          const isLocal = ent.id === sid;
+          if (!isSpectatorRef.current && !isLocal && ent.isUnderground && (!p || !p.isUnderground)) {
+            return; // Invisible (redundant but safe)
+          }
+
+          // DISABLED FOW/STEALTH FOR ALL ENTITIES TO FIX INVISIBILITY BUG
+          let opacity = ent.isUnderground ? 0.4 : 1.0;
+          let hideName = ent.isUnderground;
           const entInGrass = gameMapRef.current.obstacles.find(o => o.type === 'grass' && getDistance(head.pos, o.center) < o.radius);
           if (entInGrass && !ent.isUnderground) {
-              opacity *= 0.5;
+              opacity = 0.5;
               hideName = true;
           }
 
@@ -5642,7 +6015,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           
           // Draw regular units first
           ent.units.forEach((u, i) => {
-              if (i === 0 || !u || !u.pos) return; // Skip commander or invalid units
+              if (i === 0) return; // Skip commander
               if (!isPointInView(u.pos.x, u.pos.y, VIEWPORT_BUFFER)) return;
 
               // Use sprite for ALL non-attacking units (HUGE performance gain)
@@ -5659,7 +6032,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           ctx.globalAlpha = 1.0;
 
           // Draw commander last to be on top
-          if (head && head.pos && isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER)) {
+          if (isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER)) {
               if (ent.id === myId && isSpectatorRef.current) {
                   drawUnit(ctx, head.pos.x, head.pos.y, '#888888', true, ent.facingAngle, ent.isAttacking, ent.attackTimer, 0.4, head.type, initialEmpire.id, ent.equippedItem);
                   
@@ -5680,7 +6053,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               }
           }
           
-          if (head && head.pos && (!hideName || ent.id === myId)) {
+          if (!hideName || ent.id === myId) {
               ctx.fillStyle = ent.id === myId ? '#fbbf24' : 'white';
               ctx.font = '900 14px Inter'; ctx.textAlign = 'center';
               ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
@@ -5688,7 +6061,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               ctx.shadowBlur = 0;
           }
           
-        if (head && head.pos && ent.id === myId && ent.attackCooldown > 0) {
+        if (ent.id === myId && ent.attackCooldown > 0) {
             const barW = 40, barH = 4;
             ctx.fillStyle = 'rgba(0,0,0,0.5)';
             ctx.fillRect(head.pos.x - barW/2, head.pos.y + 30, barW, barH);
@@ -5871,9 +6244,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         framesRef.current = 0;
         lastTimeRef.current = now;
       }
-    } catch (e) {
-      console.error("CRITICAL RENDER ERROR (Ue):", e);
-    }
     };
     const rid = requestAnimationFrame(render); return () => cancelAnimationFrame(rid);
   }, [myId, nickname, isPlacingWall, isPlacingGate, isPlacingTower, gameState]);
@@ -5985,8 +6355,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             </div>
             <button 
               onClick={() => {
-                if (socketProxyRef.current) {
-                  socketProxyRef.current.connect();
+                if (socketRef.current) {
+                  socketRef.current.connect();
                 } else {
                   window.location.reload();
                 }
@@ -6170,7 +6540,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           </span>
                         </div>
                         <button 
-                          onClick={() => socketProxyRef.current?.emit('get_room_list')}
+                          onClick={() => socketRef.current?.emit('get_room_list')}
                           className='flex items-center gap-1 md:gap-2 text-[8px] md:text-[10px] text-emerald-500 font-bold uppercase hover:text-emerald-400 transition-colors'>
                           <RefreshCw size={10} className={cn("md:w-3 md:h-3", isJoiningRoom ? 'animate-spin' : '')} />
                           {t.refreshList}
@@ -6248,9 +6618,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               <div className='mt-8 p-6 bg-black/40 rounded-[2rem] border border-white/5 text-[10px] font-mono text-indigo-400 w-64 text-left space-y-2 shadow-2xl'>
                 <div className='flex items-center justify-between border-b border-white/5 pb-2'>
                   <span className='text-slate-500 uppercase font-black tracking-tighter'>Socket Status</span>
-                  <span className={socketProxyRef.current?.connected ? 'text-emerald-400' : 'text-red-400'}>{socketProxyRef.current?.connected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+                  <span className={socketRef.current?.connected ? 'text-emerald-400' : 'text-red-400'}>{socketRef.current?.connected ? 'CONNECTED' : 'DISCONNECTED'}</span>
                 </div>
-                <div>ID: <span className='text-slate-300'>{socketProxyRef.current?.id || 'NOT CONNECTED'}</span></div>
+                <div>ID: <span className='text-slate-300'>{socketRef.current?.id || 'NOT CONNECTED'}</span></div>
                 <div>LATEST: <span className='text-slate-300'>{lastEvent}</span></div>
                 {isJoiningRoom && <div className='animate-pulse text-indigo-300'>WAITING FOR HANDSHAKE...</div>}
               </div>
@@ -6330,8 +6700,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 <button 
                   disabled={lobbyPlayers.length < 2}
                   onClick={() => {
-                    if (socketProxyRef.current && currentRoom) {
-                      socketProxyRef.current.emit('start_match_request', currentRoom.id);
+                    if (socketRef.current && currentRoom) {
+                      socketRef.current.emit('start_match_request', currentRoom.id);
                     }
                   }}
                   className={`px-8 py-4 md:px-16 md:py-6 rounded-[1.5rem] md:rounded-[2.5rem] font-black text-lg md:text-2xl uppercase tracking-widest transition-all shadow-2xl active:scale-95 ${
@@ -6570,21 +6940,21 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   <div className='grid grid-cols-3 gap-1 md:gap-2'>
                     <button 
-                      onClick={() => { g.mode = 'HOLD'; socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HOLD' }); }}
+                      onClick={() => { g.mode = 'HOLD'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HOLD' }); }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'HOLD' ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Shield size={10} className='md:w-4 md:h-4' />
                       <span className='text-[6px] md:text-[8px] font-black uppercase tracking-tighter'>{t.hold}</span>
                     </button>
                     <button 
-                      onClick={() => { g.mode = 'HUNT'; socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' }); }}
+                      onClick={() => { g.mode = 'HUNT'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' }); }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'HUNT' ? 'bg-red-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Sword size={10} className='md:w-4 md:h-4' />
                       <span className='text-[6px] md:text-[8px] font-black uppercase tracking-tighter'>{t.hunt}</span>
                     </button>
                     <button 
-                      onClick={() => { g.mode = 'RECALL'; socketProxyRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' }); }}
+                      onClick={() => { g.mode = 'RECALL'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' }); }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'RECALL' ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Zap size={10} className='md:w-4 md:h-4' />
@@ -6749,8 +7119,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   playerRef.current.isAttacking = true; 
                   playerRef.current.attackTimer = 300; 
                   playerRef.current.attackCooldown = 500; 
-                  if (socketProxyRef.current && currentRoom) {
-                    socketProxyRef.current.emit('attack', { roomId: currentRoom.id });
+                  if (socketRef.current && currentRoom) {
+                    socketRef.current.emit('attack', { roomId: currentRoom.id });
                   }
                 } 
               }} className='w-20 h-20 md:w-24 md:h-24 rounded-full border-2 md:border-4 flex items-center justify-center transition-all bg-red-600/20 border-red-500/30 active:scale-90 shadow-xl shadow-red-500/10'>
@@ -7018,499 +7388,5 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       )}
     </div>
   );
-};
-
-type RenderViewCheck = (x: number, y: number, padding?: number) => boolean;
-
-interface TunnelRenderState {
-  isPointInView: RenderViewCheck;
-  localHeadPos: Vector | null;
-  visionRadius: number;
-  myId: string;
-  isSpectator: boolean;
-}
-
-interface BuildingRenderState extends TunnelRenderState {
-  currentPlayer: Entity | null;
-  entities: Entity[];
-  buildingMap: Map<string, Tower>;
-}
-
-const GameRenderer = {
-  drawObstacle(ctx: CanvasRenderingContext2D, obstacle: Obstacle, isPointInView: RenderViewCheck) {
-    if (!obstacle?.center) return;
-    if (!isPointInView(obstacle.center.x, obstacle.center.y, obstacle.radius + 150)) return;
-
-    ctx.save();
-    if (obstacle.type === 'grass') {
-      ctx.globalAlpha = 0.4;
-      ctx.fillStyle = '#166534';
-      ctx.beginPath();
-      ctx.arc(obstacle.center.x, obstacle.center.y, obstacle.radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    } else if ((obstacle as any).type === 'stone') {
-      ctx.fillStyle = '#4b5563';
-      ctx.beginPath();
-      ctx.arc(obstacle.center.x, obstacle.center.y, obstacle.radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#1f2937';
-      ctx.lineWidth = 4;
-      ctx.stroke();
-    }
-    ctx.restore();
-  },
-
-  drawTunnel(ctx: CanvasRenderingContext2D, tunnel: any, renderState: TunnelRenderState) {
-    if (!tunnel?.pos) return;
-    const tx = tunnel.pos.x;
-    const ty = tunnel.pos.y;
-    if (!renderState.isPointInView(tx, ty, 100)) return;
-    if (!renderState.isSpectator && renderState.localHeadPos) {
-      const distance = getDistanceXY(renderState.localHeadPos.x, renderState.localHeadPos.y, tx, ty);
-      if (distance > renderState.visionRadius && tunnel.ownerId !== renderState.myId) return;
-    }
-
-    ctx.save();
-    ctx.translate(tx, ty);
-    const size = 100;
-    if (images.pit && images.pit.complete && images.pit.naturalWidth !== 0) {
-      ctx.drawImage(images.pit, -size / 2, -size / 2, size, size);
-    } else {
-      ctx.fillStyle = '#5d4037';
-      ctx.beginPath();
-      ctx.arc(0, 0, 45, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#000000';
-      ctx.beginPath();
-      ctx.arc(0, 0, 30, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-  },
-
-  drawBuilding(ctx: CanvasRenderingContext2D, building: Tower, renderState: BuildingRenderState) {
-    if (!building) return;
-    const tx = building.pos?.x ?? (building as any).x;
-    const ty = building.pos?.y ?? (building as any).y;
-    if (tx === undefined || ty === undefined) return;
-    if (!renderState.isPointInView(tx, ty, 150)) return;
-    if (renderState.currentPlayer?.isUnderground) return;
-
-    if (!renderState.isSpectator && renderState.localHeadPos) {
-      const distance = getDistanceXY(renderState.localHeadPos.x, renderState.localHeadPos.y, tx, ty);
-      if (distance > renderState.visionRadius && building.ownerId !== renderState.myId) return;
-    }
-
-    ctx.save();
-    ctx.translate(tx, ty);
-
-    let renderEmpireId: EmpireType | 'neutral' | undefined = building.empireId;
-    if (!renderEmpireId || renderEmpireId === 'neutral') {
-      const owner = renderState.entities.find(entity => entity.id === building.ownerId || entity.color === building.color);
-      if (owner) renderEmpireId = owner.empireId;
-    }
-
-    if (building.type === 'wall') {
-      const gx = Math.round(building.pos.x / GRID_SIZE);
-      const gy = Math.round(building.pos.y / GRID_SIZE);
-      const n_t = renderState.buildingMap.get(`${gx}_${gy - 1}`);
-      const n_b = renderState.buildingMap.get(`${gx}_${gy + 1}`);
-      const n_l = renderState.buildingMap.get(`${gx - 1}_${gy}`);
-      const n_r = renderState.buildingMap.get(`${gx + 1}_${gy}`);
-
-      if (building.rotation) ctx.rotate(building.rotation * Math.PI / 180);
-
-      const isHorizontal = (building.rotation || 0) === 0;
-      const hasPrev = isHorizontal ? (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) : (n_t && (n_t.type === 'wall' || n_t.type === 'gate'));
-      const hasNext = isHorizontal ? (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) : (n_b && (n_b.type === 'wall' || n_b.type === 'gate'));
-      const drawStart = hasPrev ? -55 : -35;
-      const drawEnd = hasNext ? 55 : 35;
-      const drawLen = drawEnd - drawStart;
-
-      if (renderEmpireId === 'rim') {
-        ctx.fillStyle = '#4e342e';
-        ctx.fillRect(drawStart, -15, drawLen, 30);
-        ctx.fillStyle = '#5d4037';
-        const logWidth = 10;
-        const startLog = Math.floor(drawStart / logWidth);
-        const endLog = Math.ceil(drawEnd / logWidth);
-        for (let i = startLog; i < endLog; i++) {
-          const x = i * logWidth;
-          const h = 20 + Math.sin(i * 1.5) * 5;
-          ctx.beginPath();
-          ctx.moveTo(x + 1, -15);
-          ctx.lineTo(x + 5, -15 - h);
-          ctx.lineTo(x + 9, -15);
-          ctx.fill();
-        }
-        ctx.fillStyle = '#334155';
-        ctx.fillRect(drawStart, -5, drawLen, 4);
-        ctx.fillRect(drawStart, 10, drawLen, 4);
-      } else if (renderEmpireId === 'fim') {
-        ctx.fillStyle = '#cbd5e1';
-        ctx.fillRect(drawStart, -18, drawLen, 36);
-        ctx.strokeStyle = '#94a3b8';
-        ctx.lineWidth = 1;
-        const step = 14;
-        const sIdx = Math.floor(drawStart / step);
-        const eIdx = Math.ceil(drawEnd / step);
-        for (let i = sIdx; i <= eIdx; i++) {
-          ctx.beginPath();
-          ctx.moveTo(i * step, -18);
-          ctx.lineTo(i * step, 18);
-          ctx.stroke();
-        }
-        ctx.beginPath();
-        ctx.moveTo(drawStart, 0);
-        ctx.lineTo(drawEnd, 0);
-        ctx.stroke();
-        ctx.fillStyle = '#fbbf24';
-        ctx.fillRect(drawStart, -22, drawLen, 4);
-      } else {
-        ctx.fillStyle = '#d4a373';
-        ctx.fillRect(drawStart, -15, drawLen, 35);
-        ctx.strokeStyle = '#bc8a5f';
-        ctx.lineWidth = 1.5;
-        const step = 15;
-        const sIdx = Math.floor(drawStart / step);
-        const eIdx = Math.ceil(drawEnd / step);
-        for (let i = sIdx; i <= eIdx; i++) {
-          ctx.save();
-          ctx.translate(i * step, 5);
-          ctx.rotate(Math.PI / 4);
-          ctx.strokeRect(-4, -4, 8, 8);
-          ctx.restore();
-        }
-        ctx.fillStyle = '#bc8a5f';
-        const battlementStep = 20;
-        const battlementStart = Math.floor(drawStart / battlementStep);
-        const battlementEnd = Math.ceil(drawEnd / battlementStep);
-        for (let i = battlementStart; i < battlementEnd; i++) {
-          ctx.fillRect(i * battlementStep + 3, -25, 14, 10);
-        }
-      }
-
-      ctx.fillStyle = building.color;
-      ctx.fillRect(-10, 5, 20, 5);
-
-      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
-      const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
-      const thickness = renderEmpireId === 'fim' ? 36 : 30;
-      const halfThick = thickness / 2;
-
-      if (isHorizontal) {
-        if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(-halfThick, -35, thickness, 20);
-        }
-        if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(-halfThick, 15, thickness, 20);
-        }
-      } else {
-        if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(-35, -halfThick, 20, thickness);
-        }
-        if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(15, -halfThick, 20, thickness);
-        }
-      }
-      ctx.rotate((building.rotation || 0) * Math.PI / 180);
-
-      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
-      const maxHp = WALL_MAX_HP;
-      if (building.hp < maxHp - 0.01) {
-        const bWidth = 50;
-        const hRatio = Math.max(0, Math.min(1, building.hp / maxHp));
-        const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(-25, -45, bWidth, 6);
-        ctx.fillStyle = '#ef4444';
-        ctx.fillRect(-25, -45, bWidth, 6);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(-25, -45, clampedW, 6);
-        ctx.font = 'bold 12px Inter, sans-serif';
-        ctx.fillStyle = '#ffffff';
-        ctx.textAlign = 'center';
-        ctx.shadowBlur = 4;
-        ctx.shadowColor = 'black';
-        ctx.fillText(`${Math.ceil(building.hp)} / ${maxHp}`, 0, -55);
-        ctx.shadowBlur = 0;
-        ctx.font = '10px Inter';
-        ctx.textAlign = 'right';
-        ctx.fillText('🛡️', -28, -40);
-      }
-      ctx.rotate((building.rotation || 0) * Math.PI / 180);
-
-      if (building.hp <= 20) {
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-20, -10);
-        ctx.lineTo(-10, 5);
-        ctx.lineTo(0, -5);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(10, 5);
-        ctx.lineTo(20, -10);
-        ctx.stroke();
-      }
-    } else if (building.type === 'gate') {
-      const gx = Math.round(building.pos.x / GRID_SIZE);
-      const gy = Math.round(building.pos.y / GRID_SIZE);
-      const n_t = renderState.buildingMap.get(`${gx}_${gy - 1}`);
-      const n_b = renderState.buildingMap.get(`${gx}_${gy + 1}`);
-      const n_l = renderState.buildingMap.get(`${gx - 1}_${gy}`);
-      const n_r = renderState.buildingMap.get(`${gx + 1}_${gy}`);
-
-      if (building.rotation) ctx.rotate(building.rotation * Math.PI / 180);
-
-      if (renderEmpireId === 'rim') {
-        ctx.fillStyle = '#3e2723';
-        ctx.fillRect(-35, -25, 12, 50);
-        ctx.fillRect(23, -25, 12, 50);
-        ctx.fillStyle = '#2b1d1a';
-        ctx.beginPath();
-        ctx.moveTo(-38, -25);
-        ctx.lineTo(0, -40);
-        ctx.lineTo(38, -25);
-        ctx.lineTo(38, -18);
-        ctx.lineTo(-38, -18);
-        ctx.fill();
-
-        if (!building.isOpen) {
-          ctx.fillStyle = '#4e342e';
-          ctx.fillRect(-23, -22, 46, 44);
-          ctx.strokeStyle = '#3e2723';
-          ctx.lineWidth = 1;
-          for (let i = -2; i <= 2; i++) {
-            ctx.beginPath();
-            ctx.moveTo(i * 9, -22);
-            ctx.lineTo(i * 9, 22);
-            ctx.stroke();
-          }
-          ctx.fillStyle = '#1e293b';
-          ctx.fillRect(-23, -10, 46, 3);
-          ctx.fillRect(-23, 10, 46, 3);
-          ctx.fillStyle = '#334155';
-          for (let i = -2; i <= 2; i++) {
-            ctx.beginPath();
-            ctx.arc(i * 15, -10, 2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(i * 15, 10, 2, 0, Math.PI * 2);
-            ctx.fill();
-          }
-          ctx.strokeStyle = '#fbbf24';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(-8, 5, 5, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(8, 5, 5, 0, Math.PI * 2);
-          ctx.stroke();
-        } else {
-          ctx.save();
-          ctx.globalCompositeOperation = 'destination-out';
-          ctx.fillRect(-21, -22, 42, 44);
-          ctx.restore();
-          ctx.fillStyle = 'rgba(0,0,0,0.3)';
-          ctx.fillRect(-23, -22, 2, 44);
-          ctx.fillRect(21, -22, 2, 44);
-        }
-      } else if (renderEmpireId === 'fim') {
-        ctx.fillStyle = '#94a3b8';
-        ctx.fillRect(-DRAW_LENGTH / 2, -25, 14, 50);
-        ctx.fillRect(DRAW_LENGTH / 2 - 14, -25, 14, 50);
-        if (!building.isOpen) {
-          ctx.strokeStyle = '#0f172a';
-          ctx.lineWidth = 2.5;
-          for (let i = -4; i <= 4; i++) {
-            ctx.beginPath();
-            ctx.moveTo(i * (DRAW_LENGTH / 10), -20);
-            ctx.lineTo(i * (DRAW_LENGTH / 10), 20);
-            ctx.stroke();
-          }
-        } else {
-          ctx.save();
-          ctx.globalCompositeOperation = 'destination-out';
-          ctx.fillRect(-(DRAW_LENGTH - 28) / 2, -20, DRAW_LENGTH - 28, 40);
-          ctx.restore();
-        }
-      } else {
-        ctx.fillStyle = '#d4a373';
-        ctx.beginPath();
-        ctx.moveTo(-DRAW_LENGTH / 2, 25);
-        ctx.lineTo(-DRAW_LENGTH / 2, -15);
-        ctx.quadraticCurveTo(0, -45, DRAW_LENGTH / 2, -15);
-        ctx.lineTo(DRAW_LENGTH / 2, 25);
-        ctx.fill();
-        if (!building.isOpen) {
-          ctx.fillStyle = '#4a2511';
-          ctx.fillRect(-(DRAW_LENGTH - 12) / 2, -15, DRAW_LENGTH - 12, 38);
-          ctx.fillStyle = '#1e293b';
-          ctx.fillRect(-(DRAW_LENGTH - 12) / 2, -5, DRAW_LENGTH - 12, 3);
-          ctx.fillRect(-(DRAW_LENGTH - 12) / 2, 10, DRAW_LENGTH - 12, 3);
-          ctx.strokeStyle = '#fbbf24';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(0, 5, 6, 0, Math.PI * 2);
-          ctx.stroke();
-        } else {
-          ctx.save();
-          ctx.globalCompositeOperation = 'destination-out';
-          ctx.beginPath();
-          ctx.moveTo(-(DRAW_LENGTH - 16) / 2, 25);
-          ctx.lineTo(-(DRAW_LENGTH - 16) / 2, -10);
-          ctx.quadraticCurveTo(0, -35, (DRAW_LENGTH - 16) / 2, -10);
-          ctx.lineTo((DRAW_LENGTH - 16) / 2, 25);
-          ctx.fill();
-          ctx.restore();
-        }
-      }
-
-      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
-      const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
-      const jSize = renderEmpireId === 'fim' ? 36 : 30;
-      const halfWall = DRAW_LENGTH / 2;
-      const halfThick = jSize / 2;
-      const offset = GRID_SIZE / 2;
-
-      if ((building.rotation || 0) === 0) {
-        if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(-halfThick, -offset - halfThick, jSize, jSize);
-        }
-        if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(-halfThick, offset - halfThick, jSize, jSize);
-        }
-        if (!n_l && (n_t || n_b)) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(-halfWall, -halfThick, halfWall - halfThick, jSize);
-        }
-        if (!n_r && (n_t || n_b)) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(halfThick, -halfThick, halfWall - halfThick, jSize);
-        }
-      } else {
-        if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(-offset - halfThick, -halfThick, jSize, jSize);
-        }
-        if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
-          ctx.fillStyle = jointColor;
-          ctx.fillRect(offset - halfThick, -halfThick, jSize, jSize);
-        }
-      }
-      ctx.rotate((building.rotation || 0) * Math.PI / 180);
-
-      ctx.fillStyle = building.color;
-      ctx.fillRect(-10, -30, 20, 10);
-
-      if (renderState.localHeadPos && (building.ownerId === renderState.myId || building.color === renderState.currentPlayer?.color || building.faction === renderState.currentPlayer?.color)) {
-        const distance = getDistanceXY(renderState.localHeadPos.x, renderState.localHeadPos.y, tx, ty);
-        if (distance < 150) {
-          const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-          ctx.save();
-          ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
-          ctx.fillStyle = 'rgba(0,0,0,0.8)';
-          ctx.beginPath();
-          ctx.rect(-45, -85, 90, 24);
-          ctx.fill();
-          ctx.strokeStyle = '#fbbf24';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-          if (isMobile) {
-            ctx.fillStyle = '#fbbf24';
-            ctx.font = 'bold 10px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText('TAP TO ' + (building.isOpen ? 'CLOSE' : 'OPEN'), 0, -68);
-          } else {
-            ctx.fillStyle = '#fbbf24';
-            ctx.font = 'bold 14px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText('F', -30, -68);
-            ctx.fillStyle = '#ffffff';
-            ctx.font = '10px Inter, sans-serif';
-            ctx.textAlign = 'left';
-            ctx.fillText(building.isOpen ? 'CLOSE' : 'OPEN', -15, -68);
-          }
-          ctx.restore();
-        }
-      }
-
-      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
-      const maxHp = GATE_MAX_HP;
-      if (building.hp < maxHp - 0.01) {
-        const bWidth = 50;
-        const hRatio = Math.max(0, Math.min(1, building.hp / maxHp));
-        const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(-25, -45, bWidth, 6);
-        ctx.fillStyle = '#ef4444';
-        ctx.fillRect(-25, -45, bWidth, 6);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(-25, -45, clampedW, 6);
-        ctx.font = 'bold 12px Inter, sans-serif';
-        ctx.fillStyle = '#ffffff';
-        ctx.textAlign = 'center';
-        ctx.shadowBlur = 4;
-        ctx.shadowColor = 'black';
-        ctx.fillText(`${Math.ceil(building.hp)} / ${maxHp}`, 0, -55);
-        ctx.shadowBlur = 0;
-        ctx.font = '10px Inter';
-        ctx.textAlign = 'right';
-        ctx.fillText('🛡️', -28, -40);
-      }
-    } else if (building.type === 'tower' || !building.type) {
-      let faction = 'green';
-      if (renderEmpireId === 'rim') faction = 'red';
-      else if (renderEmpireId === 'fim') faction = 'blue';
-
-      const img = (images as any)[`tower_${faction}`];
-      const size = 100;
-      if (img && img.complete && img.naturalWidth !== 0) {
-        ctx.drawImage(img, -size / 2, -size / 2, size, size);
-      }
-
-      if (building.hp < TOWER_MAX_HP - 0.01) {
-        const bWidth = 60;
-        const hRatio = Math.max(0, Math.min(1, building.hp / TOWER_MAX_HP));
-        const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(-30, -155, bWidth, 7);
-        ctx.fillStyle = '#ef4444';
-        ctx.fillRect(-30, -155, bWidth, 7);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(-30, -155, clampedW, 7);
-        ctx.font = 'bold 12px Inter, sans-serif';
-        ctx.fillStyle = '#ffffff';
-        ctx.textAlign = 'center';
-        ctx.shadowBlur = 4;
-        ctx.shadowColor = 'black';
-        ctx.fillText(`${Math.ceil(building.hp)} / ${TOWER_MAX_HP}`, 0, -165);
-        ctx.shadowBlur = 0;
-        ctx.font = '12px Inter';
-        ctx.textAlign = 'right';
-        ctx.fillText('🛡️', -35, -148);
-      }
-    }
-
-    if (building.type !== 'wall' && building.hp < building.maxHp) {
-      ctx.rotate(-(building.rotation || 0) * Math.PI / 180);
-      const barW = 60;
-      const barH = 6;
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(-barW / 2, 50, barW, barH);
-      ctx.fillStyle = building.hp / building.maxHp > 0.3 ? '#22c55e' : '#ef4444';
-      ctx.fillRect(-barW / 2, 50, barW * (building.hp / building.maxHp), barH);
-    }
-
-    ctx.restore();
-  }
 };
 export default SwarmEngine;
