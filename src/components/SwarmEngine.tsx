@@ -7,6 +7,19 @@ import { cn } from '../utils/cn';
 import { EmpireType } from './SelectionScreen';
 import { Language, translations, EMPIRE_CURRENCIES } from '../utils/i18n';
 
+const images = { 
+   tower_green: new Image(), 
+   tower_red: new Image(), 
+   tower_blue: new Image(), 
+   pit: new Image(), 
+   wall: new Image() 
+}; 
+images.tower_green.src = '/assets/images/tower_green.png'; 
+images.tower_red.src = '/assets/images/tower_red.png'; 
+images.tower_blue.src = '/assets/images/tower_blue.png'; 
+images.pit.src = '/assets/images/pit.png'; 
+images.wall.src = '/assets/images/wall.png';
+
 export let ENGINE_STATE = 'MENU';
 
 interface SwarmEngineProps {
@@ -5879,124 +5892,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               ctx.fillText('🛡️', -28, -40);
             }
           } else if (t.type === 'tower' || !t.type) {
-            if (renderEmpireId === 'rim') {
-              // --- Russian Krepost (Fortress) ---
-              // 1. Log Base
-              ctx.fillStyle = '#5d4037';
-              ctx.fillRect(-35, -50, 70, 70);
-              // Log texture
-              ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1.5;
-              for(let i=0; i<4; i++) {
-                ctx.beginPath(); ctx.moveTo(-35, -50 + i*17.5); ctx.lineTo(35, -50 + i*17.5); ctx.stroke();
-              }
+            let faction = 'green';
+            if (renderEmpireId === 'rim') faction = 'red';
+            else if (renderEmpireId === 'fim') faction = 'blue';
 
-              // 2. Wooden Overhang
-              ctx.fillStyle = '#4e342e';
-              ctx.fillRect(-42, -60, 84, 15);
-              
-              // 3. Green Pointed Roof
-              ctx.fillStyle = '#1b4332'; // Dark green roof
-              ctx.beginPath();
-              ctx.moveTo(-45, -60);
-              ctx.lineTo(0, -110);
-              ctx.lineTo(45, -60);
-              ctx.fill();
-
-              // 4. Spire with Cross
-              ctx.fillStyle = '#fbbf24'; // Gold
-              ctx.fillRect(-1, -125, 2, 15);
-              ctx.fillRect(-4, -120, 8, 2); // Horizontal cross bar
-              ctx.fillRect(-1, -115, 2, 5);
-
-            } else if (renderEmpireId === 'fim') {
-              // --- French Bastion ---
-              // 1. Gray Stone Base
-              ctx.fillStyle = '#94a3b8';
-              ctx.fillRect(-35, -50, 70, 70);
-              // Stone texture (bricks)
-              ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1;
-              for(let i=0; i<4; i++) {
-                ctx.beginPath(); ctx.moveTo(-35, -50 + i*17.5); ctx.lineTo(35, -50 + i*17.5); ctx.stroke();
-              }
-
-              // 2. Balcony
-              ctx.fillStyle = '#cbd5e1';
-              ctx.fillRect(-40, -60, 80, 10);
-
-              // 3. Blue Slate Roof
-              ctx.fillStyle = '#1e3a8a'; // Deep blue roof
-              ctx.beginPath();
-              ctx.moveTo(-40, -60);
-              ctx.lineTo(-25, -95);
-              ctx.lineTo(25, -95);
-              ctx.lineTo(40, -60);
-              ctx.fill();
-              
-              // Upper roof tip
-              ctx.beginPath();
-              ctx.moveTo(-25, -95);
-              ctx.lineTo(0, -120);
-              ctx.lineTo(25, -95);
-              ctx.fill();
-
-              // 4. Tricolor Flag
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, -140, 2, 20); // Pole
-              // Blue/White/Red Flag
-              ctx.fillStyle = '#002395'; ctx.fillRect(2, -140, 6, 10);
-              ctx.fillStyle = '#ffffff'; ctx.fillRect(8, -140, 6, 10);
-              ctx.fillStyle = '#ed2939'; ctx.fillRect(14, -140, 6, 10);
-
-            } else {
-              // --- Ottoman Tower (Original) ---
-              // 1. Stone Base (Sandstone)
-              ctx.fillStyle = '#d4a373'; 
-              ctx.fillRect(-35, -50, 70, 70);
-              // Stone Texture
-              ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1;
-              for(let i=0; i<3; i++) {
-                ctx.beginPath(); ctx.moveTo(-35, -50 + i*23); ctx.lineTo(35, -50 + i*23); ctx.stroke();
-              }
-
-              // 2. Wooden Balcony
-              ctx.fillStyle = '#451a03';
-              ctx.fillRect(-40, -60, 80, 15);
-              // Balcony railing
-              ctx.strokeStyle = '#78350f'; ctx.lineWidth = 2;
-              for(let i=0; i<8; i++) {
-                ctx.beginPath(); ctx.moveTo(-35 + i*10, -60); ctx.lineTo(-35 + i*10, -45); ctx.stroke();
-              }
-
-              // 3. Faction Banner
-              ctx.fillStyle = t.color;
-              ctx.fillRect(-15, -45, 30, 10);
-
-              // 4. Upper Tower Section
-              ctx.fillStyle = '#faedcd';
-              ctx.fillRect(-25, -90, 50, 30);
-
-              // 5. Teal/Gold Dome
-              ctx.fillStyle = '#0d9488'; // Teal
-              ctx.beginPath();
-              ctx.arc(0, -90, 30, Math.PI, 0);
-              ctx.fill();
-              
-              // Dome spike
-              ctx.fillStyle = '#fbbf24';
-              ctx.fillRect(-1, -135, 2, 15);
-
-              // Golden Crescent
-              ctx.save();
-              ctx.translate(0, -135);
-              ctx.fillStyle = '#fbbf24';
-              ctx.beginPath();
-              ctx.arc(0, 0, 6, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.globalCompositeOperation = 'destination-out';
-              ctx.beginPath();
-              ctx.arc(3, -2, 6, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.restore();
+            const img = (images as any)[`tower_${faction}`];
+            const size = 100;
+            if (img && img.complete) {
+              ctx.drawImage(img, -size / 2, -size / 2, size, size);
             }
 
             // Health Bar (Tower) - Fixed clamping and added Shield Icon
