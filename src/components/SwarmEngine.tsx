@@ -5068,7 +5068,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           ctx.restore();
       };
 
-      const drawTunnel = (t: any, localHeadPos: any, VISION_RADIUS: number, myId: string) => {
+const drawTunnel = (t: any, localHeadPos: any, VISION_RADIUS: number, myId: string) => {
         if (!t || !t.pos) return;
         const tx = t.pos.x;
         const ty = t.pos.y;
@@ -5080,8 +5080,18 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ctx.save();
         ctx.translate(tx, ty);
         const size = 100;
-        if (images.pit && images.pit.complete) {
+        if (images.pit && images.pit.complete && images.pit.naturalWidth !== 0) {
           ctx.drawImage(images.pit, -size / 2, -size / 2, size, size);
+        } else {
+          // Fallback if image fails to load
+          ctx.fillStyle = '#5d4037';
+          ctx.beginPath();
+          ctx.arc(0, 0, 45, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#000000';
+          ctx.beginPath();
+          ctx.arc(0, 0, 30, 0, Math.PI * 2);
+          ctx.fill();
         }
         ctx.restore();
       };
@@ -5898,7 +5908,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
             const img = (images as any)[`tower_${faction}`];
             const size = 100;
-            if (img && img.complete) {
+            if (img && img.complete && img.naturalWidth !== 0) {
               ctx.drawImage(img, -size / 2, -size / 2, size, size);
             }
 
