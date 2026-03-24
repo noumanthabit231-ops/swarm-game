@@ -1647,16 +1647,33 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       let idx = entitiesRef.current.findIndex(e => e.id === pid);
       
-      const realPos: Vector = { x: data.x || 0, y: data.y || 0 };
-      const realAngle: number = data.rotation || 0;
+      const realPos: Vector = {
+        x: typeof data.x === 'number' ? data.x : 0,
+        y: typeof data.y === 'number' ? data.y : 0
+      };
+      const realAngle: number = typeof data.rotation === 'number' ? data.rotation : 0;
 
       if (idx !== -1) {
         const ent = entitiesRef.current[idx];
+        const head = ent.units[0];
+        if (head) {
+          const shouldSnapToRemotePos =
+            !ent.lastUpdate ||
+            !ent.targetPos ||
+            getDistance(head.pos, realPos) > 500;
+
+          if (shouldSnapToRemotePos) {
+            head.pos = { ...realPos };
+          }
+        }
+
         ent.targetAngle = realAngle; 
         ent.targetPos = { ...realPos }; 
+        ent.lastPos = { ...realPos };
         ent.lastUpdate = Date.now(); 
         ent.akce = data.akce;
         ent.name = data.name || ent.name; 
+        remotePlayersRef.current.set(pid, ent);
         
         if (data.empireId || data.faction || data.name) {
           const currentEmpire = data.empireId || ent.empireId;
@@ -1892,6 +1909,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           attackCooldown: 0,
           weightSlowdown: 0,
           splitCooldown: 0,
+          targetPos: { ...realPos },
+          targetAngle: realAngle,
+          lastUpdate: Date.now(),
           lastPos: { ...realPos }
         };
         
@@ -1906,6 +1926,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             newPlayer.units.push({ id: generateId('u'), pos: { ...realPos }, color: newPlayer.color, type: 'infantry', hp: 100 });
           }
         }
+        remotePlayersRef.current.set(data.id, newPlayer);
         entitiesRef.current.push(newPlayer);
       }
     });
