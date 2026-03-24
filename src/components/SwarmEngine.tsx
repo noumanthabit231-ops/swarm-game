@@ -410,10 +410,6 @@ class MapGenerator {
   }
 }
 
-const getDistance = (p1: { x: number; y: number }, p2: { x: number; y: number }) => {
-  return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
-};
-
 const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, isCommander: boolean, angle: number, isAttacking: boolean, attackTimer: number, opacity: number = 1.0, type: UnitType = 'infantry', empireId: EmpireType | 'neutral' = 'neutral', equippedItem?: string) => {
     const scale = isCommander ? COMMANDER_SCALE : 1.0;
     const radius = UNIT_RADIUS * scale;
