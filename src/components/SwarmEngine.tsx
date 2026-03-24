@@ -104,7 +104,7 @@ type UnitType = 'infantry' | 'tower' | 'wall' | 'gate';
 
 interface Vector { x: number; y: number; }
 interface Unit { pos: Vector; color: string; id: string; type: UnitType; hp: number; empireId?: EmpireType | 'neutral'; }
-interface Projectile { id: string; ownerId: string; pos: Vector; vel: Vector; life: number; damage: number; color: string; empireId?: EmpireType; targetPos?: Vector; isReal?: boolean; }
+interface Projectile { id: string; ownerId: string; pos: Vector; vel: Vector; life: number; damage: number; color: string; empireId?: EmpireType; targetPos?: Vector; targetId?: string; isReal?: boolean; }
 interface Tower { id: string; ownerId: string; pos: Vector; color: string; hp: number; maxHp: number; lastShot: number; faction?: string; empireId?: EmpireType; type?: 'tower' | 'wall' | 'gate' | 'tunnel'; rotation?: number; isOpen?: boolean; }
 interface Obstacle { id: string; type: 'tree' | 'boulder' | 'grass'; points?: Vector[]; center: Vector; radius: number; color: string; }
 interface Garrison { 
@@ -983,6 +983,19 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       ENGINE_STATE = 'MENU';
     });
 
+    socket.on('pit_removed', (data: { id: string }) => {
+      const targetId = String(data.id);
+      tunnelsRef.current = tunnelsRef.current.filter(t => {
+        const match = String(t.id) === targetId;
+        if (match) {
+          for(let i=0; i<8; i++) {
+            createDust(t.pos.x, t.pos.y, '#78350f');
+          }
+        }
+        return !match;
+      });
+    });
+
     socket.on('remote_building_destroyed', (data: { buildingId: string }) => {
       const targetId = String(data.buildingId || data);
       
@@ -1056,6 +1069,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         color: data.color || '#fbbf24',
         empireId: data.empireId || 'neutral',
         targetPos: { x: data.targetX, y: data.targetY },
+        targetId: data.targetId,
         isReal: true
       });
       
@@ -2539,7 +2553,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     }
   };
 
-  const fireProjectile = (ownerId: string, pos: Vector, target: Vector, color: string, empireId?: EmpireType) => {
+  const fireProjectile = (ownerId: string, pos: Vector, target: Vector, color: string, empireId?: EmpireType, targetId?: string) => {
     const angle = Math.atan2(target.y - pos.y, target.x - pos.x);
     projectilesRef.current.push({
       id: generateId(),
@@ -2550,7 +2564,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       damage: 60, // Projectile damage (will be modified by AoE later)
       color,
       empireId,
-      targetPos: { ...target }
+      targetPos: { ...target },
+      targetId
     });
     
     // Sync projectile creation so enemies can see it
@@ -2563,7 +2578,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             targetX: target.x,
             targetY: target.y,
             color,
-            empireId
+            empireId,
+            targetId
         });
     }
   };
@@ -3898,8 +3914,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
                 // FIXED: Only explicit attack triggers damage for players. AI still has auto-attack.
                 const isAI = e1.type === 'ai';
-                const isActive = e1.isAttacking && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
-                const isAuto = isAI && !e1.isAttacking && (d < 30 && Math.random() < 0.01);
+                // NEW: Underground units CANNOT attack anyone or anything
+                const isActive = !e1.isUnderground && e1.isAttacking && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
+                const isAuto = !e1.isUnderground && isAI && !e1.isAttacking && (d < 30 && Math.random() < 0.01);
 
                 if (isActive || isAuto) {
                   if (tOwnerId === myId && spawnProtectionRef.current) continue;
@@ -4159,6 +4176,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       // Projectiles & AoE
       for (let i = projectilesRef.current.length - 1; i >= 0; i--) {
         const pr = projectilesRef.current[i];
+
+        // NEW: Projectile Disappearing Logic - If target goes underground, projectile vanishes
+        if (pr.targetId) {
+            const targetEnt = entitiesRef.current.find(e => e.id === pr.targetId);
+            const targetGar = garrisonsRef.current.find(g => g.id === pr.targetId);
+            if ((targetEnt && targetEnt.isUnderground) || (targetGar && targetGar.isUnderground)) {
+                projectilesRef.current.splice(i, 1);
+                continue;
+            }
+        }
+
         if (Math.random() < 0.6) particlesRef.current.push({ pos: { ...pr.pos }, vel: { x: (Math.random()-0.5)*2, y: (Math.random()-0.5)*2 }, life: 0.6, maxLife: 0.6, color: 'rgba(100,116,139,0.4)', type: 'dust' });
         if (pr.targetPos) {
           const a = Math.atan2(pr.targetPos.y - pr.pos.y, pr.targetPos.x - pr.pos.x);
@@ -4388,14 +4416,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
           if (nearestPos) {
             t.lastShot = Date.now(); 
-            fireProjectile(t.ownerId, t.pos, nearestPos, t.color, t.empireId);
+            fireProjectile(t.ownerId, t.pos, nearestPos, t.color, t.empireId, t.currentTargetId || undefined);
           }
         }
       }
 
       // Building Attacks (Armies/Garrisons)
       entitiesRef.current.forEach(e => {
-        if (e.units.length === 0 || e.hasHitInCurrentSwing) return;
+        if (e.units.length === 0 || e.hasHitInCurrentSwing || e.isUnderground) return; // NEW: Block underground attacks
         towersRef.current.forEach(t => {
           if (t.ownerId === e.id || t.faction === e.faction || (t.type as any) === 'tunnel') return;
           if (getDistance(e.units[0].pos, t.pos) < 60 && e.isAttacking && e.attackTimer < 250) {
@@ -6079,28 +6107,32 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           drawEntities.forEach(ent => {
           const head = ent.units[0];
           
-          // NEW: Layer Isolation - Allow seeing across layers but with transparency
+          // NEW: 100% Stealth Isolation - Underground players are fully invisible to enemies
           const p = playerRef.current;
+          const sid = socketProxyRef.current?.id || myId;
+          const isLocal = ent.id === sid;
+          
           let opacity = 1.0;
           let hideName = false;
 
           if (ent.isUnderground) {
-            opacity = 0.3; // Very transparent if underground
-            hideName = true;
+            if (isLocal) {
+              opacity = 0.5; // I see myself transparent
+              hideName = false;
+            } else {
+              opacity = 0; // ENEMIES ARE FULLY INVISIBLE
+              hideName = true;
+            }
           }
 
-          // If we are also underground, we see them better
-          if (p?.isUnderground && ent.isUnderground) {
-            opacity = 0.7;
-            hideName = false;
-          }
+          if (opacity <= 0) return; // SKIP RENDERING INVISIBLE UNITS
 
           if (!isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER * 2)) return;
 
           // Fog of War: Grass logic
           const entInGrass = gameMapRef.current.obstacles.find(o => o.type === 'grass' && getDistance(head.pos, o.center) < o.radius);
           if (entInGrass && !ent.isUnderground) {
-              opacity = 0.5;
+              opacity *= 0.5;
               hideName = true;
           }
 

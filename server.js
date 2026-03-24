@@ -266,6 +266,14 @@ const server = uWS.App().ws('/*', {
               const attacker = room.players.find(p => p.id === data.attackerId);
               const victim = room.players.find(p => p.id === data.targetPlayerId);
               
+              // NEW: Изоляция урона - подземные игроки неуязвимы и не могут атаковать
+              if (victim && victim.isUnderground) {
+                return console.log(`[COMBAT ARBITER] Hit blocked: victim ${victim.id} is underground`);
+              }
+              if (attacker && attacker.isUnderground) {
+                return console.log(`[COMBAT ARBITER] Hit blocked: attacker ${attacker.id} is underground`);
+              }
+
               let sourcePos = null;
               let maxDist = 350; // Базовое расстояние для меча
 
@@ -372,7 +380,16 @@ const server = uWS.App().ws('/*', {
         }
 
         case 'building_hit': {
-          if (data.roomId) ws.publish(data.roomId, JSON.stringify({ type: "remote_building_hit", data }));
+          if (data.roomId) {
+            const room = rooms.get(data.roomId);
+            if (room) {
+              const attacker = room.players.find(p => p.id === data.attackerId);
+              if (attacker && attacker.isUnderground) {
+                return console.log(`[COMBAT ARBITER] Building hit blocked: attacker ${attacker.id} is underground`);
+              }
+              ws.publish(data.roomId, JSON.stringify({ type: "remote_building_hit", data }));
+            }
+          }
           break;
         }
 
@@ -403,7 +420,8 @@ const server = uWS.App().ws('/*', {
           const room = rooms.get(data.roomId);
           if (room && room.tunnels) {
             room.tunnels = room.tunnels.filter(t => t.id !== data.id);
-            broadcastToRoom(data.roomId, { type: "remote_tunnel_remove", data: { id: data.id } });
+            // BROADCAST PIT REMOVAL TO ALL
+            broadcastToRoom(data.roomId, { type: "pit_removed", data: { id: data.id } });
           }
           break;
         }
