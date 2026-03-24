@@ -727,58 +727,22 @@ const drawTunnel = (ctx: CanvasRenderingContext2D, t: any, localHeadPos: any, VI
     ctx.save();
     ctx.translate(tx, ty);
 
-    // 1. Земляная насыпь (Mound)
+    // Внешний круг - коричневый
+    ctx.fillStyle = '#5d4037';
     ctx.beginPath();
-    ctx.ellipse(0, 0, 55, 38, 0, 0, Math.PI * 2);
-    const moundGrad = ctx.createRadialGradient(0, 0, 30, 0, 0, 55);
-    moundGrad.addColorStop(0, '#3e2723'); // Темная земля у входа
-    moundGrad.addColorStop(0.7, '#5d4037'); // Коричневая насыпь
-    moundGrad.addColorStop(1, 'rgba(93, 64, 55, 0)'); // Плавный переход в траву
-    ctx.fillStyle = moundGrad;
+    ctx.arc(0, 0, 50, 0, Math.PI * 2);
     ctx.fill();
 
-    // Эффект неровности насыпи
-    ctx.strokeStyle = 'rgba(62, 39, 35, 0.5)';
-    ctx.lineWidth = 2;
-    for(let i=0; i<12; i++) {
-        const ang = (i / 12) * Math.PI * 2 + Math.random() * 0.5;
-        ctx.beginPath();
-        ctx.moveTo(Math.cos(ang) * 45, Math.sin(ang) * 30);
-        ctx.lineTo(Math.cos(ang) * 52, Math.sin(ang) * 35);
-        ctx.stroke();
-    }
-
-    // 2. Глубокая яма (Radial Gradient)
-    const pitGrad = ctx.createRadialGradient(0, 0, 2, 0, 0, 42);
-    pitGrad.addColorStop(0, '#000000'); // Центр - черная пустота
-    pitGrad.addColorStop(0.4, '#0a0a0a'); 
-    pitGrad.addColorStop(0.8, '#1b1b1b');
-    pitGrad.addColorStop(1, '#3e2723'); // Края - коричневая земля
-    
+    // Внутренний круг - черный
+    ctx.fillStyle = '#000000';
     ctx.beginPath();
-    ctx.ellipse(0, 0, 42, 28, 0, 0, Math.PI * 2);
-    ctx.fillStyle = pitGrad;
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = 'black';
+    ctx.arc(0, 0, 35, 0, Math.PI * 2);
     ctx.fill();
-    ctx.shadowBlur = 0;
 
-    // 3. Текстура земли на краях
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = 1;
-    for(let i=0; i<15; i++) {
-      const ang = (i / 15) * Math.PI * 2;
-      const r = 38 + Math.random() * 5;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(ang) * r, Math.sin(ang) * (r*0.6));
-      ctx.lineTo(Math.cos(ang) * (r-5), Math.sin(ang) * (r*0.6-3));
-      ctx.stroke();
-    }
-
-    // 4. Метка фракции (Маленький флажок или камень)
+    // Метка фракции
     ctx.fillStyle = t.color || '#78350f';
     ctx.beginPath();
-    ctx.arc(0, -38, 5, 0, Math.PI * 2);
+    ctx.arc(0, -40, 6, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = 'white';
     ctx.lineWidth = 1.5;
@@ -960,66 +924,31 @@ const drawBuilding = (
         ctx.beginPath(); ctx.arc(0, 0, 55, 0, Math.PI*2); ctx.fill();
 
         if (renderEmpireId === 'rim') {
-          // --- Российская Империя: Темные бревна, красная крыша ---
-          ctx.fillStyle = '#2b1d1a';
+          // --- Россия (Red): Тёмно-коричневый квадрат, красный треугольник ---
+          ctx.fillStyle = '#3e2723'; // Тёмно-коричневый
           ctx.fillRect(-45, -45, 90, 90);
-          // Штриховка бревен
-          ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-          for(let i=-45; i<=45; i+=12) {
-            ctx.beginPath(); ctx.moveTo(i, -45); ctx.lineTo(i, 45); ctx.stroke();
-          }
           
-          // Красная шатровая крыша
-          ctx.fillStyle = '#b91c1c';
+          ctx.fillStyle = t.color || '#ef4444'; // Цвет фракции для крыши
           ctx.beginPath(); ctx.moveTo(-55, -45); ctx.lineTo(55, -45); ctx.lineTo(0, -120); ctx.fill();
           
-          // Флаг-триколор
-          ctx.fillStyle = 'white'; ctx.fillRect(0, -135, 30, 8);
-          ctx.fillStyle = '#1d4ed8'; ctx.fillRect(0, -127, 30, 8);
-          ctx.fillStyle = '#ef4444'; ctx.fillRect(0, -119, 30, 8);
-          ctx.strokeStyle = 'black'; ctx.lineWidth = 1; ctx.strokeRect(0, -135, 30, 24);
-          
         } else if (renderEmpireId === 'fim') {
-          // --- Французская Империя: Узкая каменная башня ---
-          ctx.fillStyle = '#cbd5e1';
+          // --- Франция (Blue): Светло-серый квадрат, узкий высокий конус ---
+          ctx.fillStyle = '#d1d5db'; // Светло-серый
           ctx.fillRect(-40, -40, 80, 80);
-          // Текстура камня
-          ctx.strokeStyle = '#94a3b8';
-          for(let i=-40; i<40; i+=20) {
-            for(let j=-40; j<40; j+=20) ctx.strokeRect(i, j, 20, 20);
-          }
           
-          // Синяя коническая крыша
-          ctx.fillStyle = '#1e3a8a';
-          ctx.beginPath(); ctx.moveTo(-45, -40); ctx.lineTo(45, -40); ctx.lineTo(0, -130); ctx.fill();
-          
-          // Золотые королевские лилии (точки)
-          ctx.fillStyle = '#fbbf24';
-          ctx.beginPath(); ctx.arc(0, -80, 4, 0, Math.PI*2); ctx.fill();
-          ctx.beginPath(); ctx.arc(-8, -70, 3, 0, Math.PI*2); ctx.fill();
-          ctx.beginPath(); ctx.arc(8, -70, 3, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle = t.color || '#3b82f6'; // Цвет фракции для крыши
+          ctx.beginPath(); ctx.moveTo(-30, -40); ctx.lineTo(30, -40); ctx.lineTo(0, -160); ctx.fill();
           
         } else {
-          // --- Османская Империя: Каменный низ, бирюзовый купол ---
-          ctx.fillStyle = '#d4a373';
+          // --- Османы (Green): Серый квадрат, бирюзовый купол, желтая точка ---
+          ctx.fillStyle = '#808080'; // Серый
           ctx.fillRect(-45, -45, 90, 90);
           
-          // Бирюзовый купол
-          const domeGrad = ctx.createRadialGradient(0, -50, 5, 0, -50, 45);
-          domeGrad.addColorStop(0, '#2dd4bf'); // Изящный бирюзовый
-          domeGrad.addColorStop(1, '#0d9488');
-          ctx.fillStyle = domeGrad;
-          ctx.beginPath(); 
-          ctx.arc(0, -45, 45, Math.PI, 0); 
-          ctx.fill();
+          ctx.fillStyle = t.color || '#2dd4bf'; // Цвет фракции для крыши (купол)
+          ctx.beginPath(); ctx.arc(0, -45, 45, Math.PI, 0); ctx.fill();
           
-          // Золотой шпиль и полумесяц
-          ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3;
-          ctx.beginPath(); ctx.moveTo(0, -90); ctx.lineTo(0, -115); ctx.stroke();
-          ctx.fillStyle = '#fbbf24';
-          ctx.beginPath(); ctx.arc(0, -120, 6, 0.2 * Math.PI, 1.8 * Math.PI); ctx.fill();
-          ctx.fillStyle = '#0d9488'; // Cutout for crescent
-          ctx.beginPath(); ctx.arc(3, -120, 5, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle = '#facc15'; // Жёлтая точка (шпиль)
+          ctx.beginPath(); ctx.arc(0, -95, 6, 0, Math.PI*2); ctx.fill();
         }
     }
     
