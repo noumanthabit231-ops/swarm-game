@@ -3961,14 +3961,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 let targetObj = isTargetGarrison ? garrisonMap.get(n.entityId.substring(2)) : entityMap.get(n.entityId);
                 if (!targetObj) continue;
 
-                // NEW: Layer Isolation for Combat
+                // NEW: Layer Isolation for Combat (v2.9.4)
+                // Both attacker and target must be on the same layer (Surface OR Underground)
                 if (e1.isUnderground !== targetObj.isUnderground) continue;
 
                 // FIXED: Only explicit attack triggers damage for players. AI still has auto-attack.
                 const isAI = e1.type === 'ai';
-                // NEW: Underground units CANNOT attack anyone or anything
-                const isActive = !e1.isUnderground && e1.isAttacking && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
-                const isAuto = !e1.isUnderground && isAI && !e1.isAttacking && (d < 30 && Math.random() < 0.01);
+                // REWRITE: Underground units CAN attack each other (Underground War)
+                const isActive = e1.isAttacking && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
+                const isAuto = isAI && !e1.isAttacking && (d < 30 && Math.random() < 0.01);
 
                 if (isActive || isAuto) {
                   if (tOwnerId === myId && spawnProtectionRef.current) continue;
@@ -4399,11 +4400,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           let minD = 400;
           let currentTargetStillValid = false;
 
-          // Check if current target is still valid (in range and alive)
+          // Check if current target is still valid (in range, alive, and NOT underground)
           if (t.currentTargetId) {
             // Check entities
             const targetEnt = entitiesRef.current.find(e => e.id === t.currentTargetId);
-            if (targetEnt && targetEnt.units.length > 0) {
+            if (targetEnt && targetEnt.units.length > 0 && !targetEnt.isUnderground) {
               const d = getDistance(t.pos, targetEnt.units[0].pos);
               if (d < 400) {
                 nearestPos = targetEnt.units[0].pos;
@@ -4414,7 +4415,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             // Check garrisons if no entity found
             if (!currentTargetStillValid) {
               const targetG = garrisonsRef.current.find(g => g.id === t.currentTargetId);
-              if (targetG && targetG.units.length > 0) {
+              if (targetG && targetG.units.length > 0 && !targetG.isUnderground) {
                 const d = getDistance(t.pos, targetG.pos);
                 if (d < 400) {
                   nearestPos = targetG.pos;
@@ -4475,7 +4476,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Building Attacks (Armies/Garrisons)
       entitiesRef.current.forEach(e => {
-        if (e.units.length === 0 || e.hasHitInCurrentSwing || e.isUnderground) return; // NEW: Block underground attacks
+        // --- UNDERGROUND ATTACK RULE (v2.9.4) ---
+        // Players UNDERGROUND can attack other things UNDERGROUND (like other players),
+        // but they CANNOT attack surface buildings (walls/towers).
+        if (e.units.length === 0 || e.hasHitInCurrentSwing || e.isUnderground) return; 
+        
         towersRef.current.forEach(t => {
           if (t.ownerId === e.id || t.faction === e.faction || (t.type as any) === 'tunnel') return;
           if (getDistance(e.units[0].pos, t.pos) < 60 && e.isAttacking && e.attackTimer < 250) {
@@ -6189,7 +6194,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           const head = ent.units[0];
           if (!head || !head.pos) return;
           
-          // NEW: 100% Stealth Isolation - Underground players are fully invisible to enemies
+          // NEW: 100% Stealth Isolation - Underground visibility logic
           const p = playerRef.current;
           const sid = socketProxyRef.current?.id || myId;
           const isLocal = ent.id === sid;
@@ -6197,12 +6202,21 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           let opacity = 1.0;
           let hideName = false;
 
-          if (ent.isUnderground) {
-            if (isLocal) {
-              opacity = 0.5; // I see myself transparent
+          // --- UNDERGROUND VISIBILITY REWRITE (v2.9.4) ---
+          if (isLocal) {
+            if (ent.isUnderground) opacity = 0.5; // I see myself transparent when underground
+          } else {
+            const iAmUnderground = p?.isUnderground || false;
+            const enemyIsUnderground = ent.isUnderground || false;
+
+            if (iAmUnderground && enemyIsUnderground) {
+              opacity = 1.0; // BOTH UNDERGROUND: Full visibility!
               hideName = false;
-            } else {
-              opacity = 0; // ENEMIES ARE FULLY INVISIBLE
+            } else if (!iAmUnderground && enemyIsUnderground) {
+              opacity = 0; // I AM ON SURFACE, ENEMY UNDERGROUND: Invisible
+              hideName = true;
+            } else if (iAmUnderground && !enemyIsUnderground) {
+              opacity = 0.3; // I AM UNDERGROUND, ENEMY ON SURFACE: Ghostly/Semi-transparent
               hideName = true;
             }
           }
