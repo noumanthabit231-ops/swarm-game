@@ -267,6 +267,7 @@ const BASE_ACCEL = 0.45;
 const BASE_FRICTION = 0.95;
 const MASS_INERTIA_FACTOR = 0.0004;
 const MELEE_ENGAGEMENT_DIST = 25;
+const COMMANDER_MAX_HP = 500;
 const TOWER_MAX_HP = 5; // Reduced to 5 hits per request
 const WALL_MAX_HP = 10; // 10 hits
 const GATE_MAX_HP = 5; // 5 hits
@@ -957,7 +958,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       empireId: ent.empireId,
       unitCount: ent.units.length,
       akce: ent.akce,
-      hp: ent.units[0]?.hp || 100,
+      hp: ent.units[0]?.hp || COMMANDER_MAX_HP,
       isAttacking: ent.isAttacking,
       isDashing: ent.isDashing,
       isUnderground: ent.isUnderground ?? false,
@@ -1536,93 +1537,31 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             const targetUnit = p.units[idx];
             if (targetUnit) {
-                const damage = data.damage || 34;
-                targetUnit.hp -= damage;
-                if (p.units.length === 1 && currentRoomRef.current) {
-                  socketRef.current?.emit('remote_hp_sync', {
-                    roomId: currentRoomRef.current.id,
-                    id: socketRef.current?.id || myIdRef.current,
-                    hp: Math.max(0, targetUnit.hp)
+                const authoritativeUnitCount = typeof data.currentUnitCount === 'number'
+                  ? Math.max(1, Math.floor(data.currentUnitCount))
+                  : p.units.length;
+                const authoritativeHp = typeof data.currentHp === 'number'
+                  ? data.currentHp
+                  : (p.units[0]?.hp || COMMANDER_MAX_HP);
+
+                while (p.units.length > authoritativeUnitCount) {
+                  p.units.pop();
+                }
+                while (p.units.length < authoritativeUnitCount && p.units[0]) {
+                  p.units.push({
+                    id: generateId('u'),
+                    pos: { ...p.units[0].pos },
+                    color: p.color,
+                    type: 'infantry',
+                    hp: 100
                   });
                 }
-                if (targetUnit.hp <= 0) {
-                    if (p.units.length === 1) {
-                        // Commander is dying
-                        
-                        // Send death event to server so others know
-                        socketRef.current?.emit('commander_death_detected', { 
-                          roomId: currentRoomRef.current?.id, 
-                          winnerId: data.attackerId || null, 
-                          loserId: myId 
-                        });
 
-                        // FORCED LOCAL UI TRIGGER
-                        const killer = data.attackerName && data.attackerName !== 'Enemy' ? data.attackerName : getKillerName(data.attackerId || null);
-                        setMatchResult({ isWinner: false, winnerName: killer });
-                        setKillerName(killer);
-                        
-                        const endTime = Date.now();
-                        endTimeRef.current = endTime;
-                        const start = startTimeRef.current || (endTime - 1000);
-                        const durationSecs = Math.floor((endTime - start) / 1000);
-                        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-                        const secs = (durationSecs % 60).toString().padStart(2, '0');
-                        
-                        setMatchStats({
-                          duration: `${mins}:${secs}`,
-                          maxArmy: maxArmyRef.current,
-                          towersBuilt: towersBuiltRef.current,
-                          kills: killsRef.current
-                        });
-                        
-                        saveFinalStats(false);
-                        
-                        ENGINE_STATE = 'MATCH_RESULTS';
-                        setGameState('MATCH_RESULTS');
-                        gameStateRef.current = 'MATCH_RESULTS';
-                        setIsSpectator(true);
-                    } else if (idx === 0 && p.units.length > 1) {
-                        // If somehow the commander was targeted but has army, 
-                        // redirect damage to a random soldier instead for protection
-                        const soldierIdx = p.units.length - 1;
-                        p.units.splice(soldierIdx, 1);
-                        createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
-                        return;
-                    }
-
-                    p.units.splice(idx, 1);
-                    if (p.units[0]) createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
-                    
-                    if (p.units.length === 0 && (ENGINE_STATE === 'GAME_ACTIVE' || gameStateRef.current === 'GAME_ACTIVE')) {
-                      // IMMEDIATE UI FALLBACK (If server doesn't respond or player dies to garrison)
-                      if (!matchResult) {
-                        const killer = data.attackerName && data.attackerName !== 'Enemy' ? data.attackerName : getKillerName(data.attackerId || null);
-                        setMatchResult({ isWinner: false, winnerName: killer });
-                        setKillerName(killer);
-                        
-                        const endTime = Date.now();
-                        endTimeRef.current = endTime;
-                        const start = startTimeRef.current || (endTime - 1000);
-                        const durationSecs = Math.floor((endTime - start) / 1000);
-                        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-                        const secs = (durationSecs % 60).toString().padStart(2, '0');
-                        
-                        setMatchStats({
-                          duration: `${mins}:${secs}`,
-                          maxArmy: maxArmyRef.current,
-                          towersBuilt: towersBuiltRef.current,
-                          kills: killsRef.current
-                        });
-                        
-                        saveFinalStats(false);
-                      }
-
-                      ENGINE_STATE = 'MATCH_RESULTS';
-                      setGameState('MATCH_RESULTS');
-                      gameStateRef.current = 'MATCH_RESULTS';
-                      setIsSpectator(true);
-                    }
+                if (p.units[0]) {
+                  p.units[0].hp = authoritativeHp;
+                  createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
                 }
+                setScore(p.units.length);
             }
           }
       }
@@ -1886,7 +1825,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (data.equippedItem) ent.equippedItem = data.equippedItem; // NEW
         
         if (ent.units.length > 0) {
-          ent.units[0].hp = data.hp || 100;
+        ent.units[0].hp = typeof data.hp === 'number' ? data.hp : COMMANDER_MAX_HP;
           
           if (data.recruitedIds && Array.isArray(data.recruitedIds)) {
             data.recruitedIds.forEach((rid: string) => {
@@ -2062,7 +2001,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           id: pid,
           name: data.name || `Commander #${pid.slice(0, 3)}`,
           type: 'player',
-          units: [{ id: generateId('c'), pos: { ...realPos }, color: factionColor, type: 'infantry', hp: data.hp || 100 }],
+          units: [{ id: generateId('c'), pos: { ...realPos }, color: factionColor, type: 'infantry', hp: typeof data.hp === 'number' ? data.hp : COMMANDER_MAX_HP }],
           color: factionColor, 
           faction: factionColor,
           empireId: empireId,
@@ -3082,7 +3021,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             pos: { x: 600, y: 600 },
             color: factionColor, 
             type: 'infantry',
-            hp: 100
+            hp: COMMANDER_MAX_HP
         }];
         existing.score = 1;
         existing.akce = 0;
@@ -3103,7 +3042,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             color: isMe ? playerColor : remoteColor, 
             pos: { x: 600, y: 600 }, 
             type: 'infantry',
-            hp: 100
+            hp: COMMANDER_MAX_HP
         }],
         color: isMe ? playerColor : remoteColor,
         faction: isMe ? playerColor : remoteColor,
@@ -3187,6 +3126,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       if (existing) {
         if (existing.units[0]) {
           existing.units[0].pos = { ...sPos };
+          existing.units[0].hp = COMMANDER_MAX_HP;
         }
         existing.isUnderground = false;
         return existing;
@@ -3196,7 +3136,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         name: isLocal ? nickname : p.name,
         color: isLocal ? playerColor : (p.color || '#94a3b8'), 
         faction: isLocal ? playerColor : (p.faction || '#94a3b8'),
-        units: [{ id: generateId(), color: isLocal ? playerColor : (p.color || '#94a3b8'), pos: { ...sPos }, type: 'infantry', hp: 500 }],
+        units: [{ id: generateId(), color: isLocal ? playerColor : (p.color || '#94a3b8'), pos: { ...sPos }, type: 'infantry', hp: COMMANDER_MAX_HP }],
         score: p.score || 1,
         akce: p.akce || 0,
         isDashing: false,
@@ -4326,11 +4266,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   // SERVER SYNC: Any client that detects a commander death should report it.
                   if (ui === 0 && e.units.length === 1) {
-                      socketRef.current?.emit('commander_death_detected', { 
-                        roomId: currentRoomRef.current?.id, 
-                        winnerId: pr.ownerId === 'remote'?null:pr.ownerId, 
-                        loserId: e.id 
-                      });
                   }
                 } else if (pr.ownerId === myId) {
                    // Still sync partial damage
@@ -4367,8 +4302,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                           targetPlayerId: g.ownerId, 
                           damage: aoeD, 
                           garrisonId: g.id,
-                          attackerId: t.ownerId,
-                          attackerName: t.name || 'Tower'
+                          attackerId: pr.ownerId,
+                          attackerName: pr.ownerId === myId ? nickname : 'Tower'
                       });
                   }
                 }
@@ -4825,45 +4760,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   // Note: we don't update lastUIUpdateTimeRef here to allow leaderboard to update too
               }
               
-              // CRITICAL FIX: If local player's army is wiped out, trigger death UI immediately
-              if (ent.units.length === 0 && (ENGINE_STATE === 'GAME_ACTIVE' || gameStateRef.current === 'GAME_ACTIVE')) {
-                  if (!matchResult) {
-                    setMatchResult({ isWinner: false, winnerName: 'Enemies' });
-                    
-                    const endTime = Date.now();
-                    endTimeRef.current = endTime;
-                    const start = startTimeRef.current || (endTime - 1000);
-                    const durationSecs = Math.floor((endTime - start) / 1000);
-                    const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-                    const secs = (durationSecs % 60).toString().padStart(2, '0');
-                    
-                    setMatchStats({
-                      duration: `${mins}:${secs}`,
-                      maxArmy: maxArmyRef.current,
-                      towersBuilt: towersBuiltRef.current,
-                      kills: killsRef.current
-                    });
-                    
-                    saveFinalStats(false);
-                  }
-
-                  ENGINE_STATE = 'MATCH_RESULTS';
-                  setGameState('MATCH_RESULTS');
-                  gameStateRef.current = 'MATCH_RESULTS';
-                  setIsSpectator(true);
-                  
-                  // Inform server
-                  socketRef.current?.emit('commander_death_detected', { 
-                      roomId: currentRoomRef.current?.id, 
-                      winnerId: null, 
-                      loserId: myId 
-                  });
-              }
-          }
-          
-          // NEW: If a remote player reaches 0 units, tombstone them locally
-          if (ent.units.length === 0 && before > 0 && ent.id !== myId) {
-              recentlyDestroyedPlayers.current.set(ent.id, Date.now());
           }
         });
     }
@@ -4913,66 +4809,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         lastUIUpdateTimeRef.current = now_ui;
     }
 
-    // LOCAL VICTORY DETECTION (Fallback if server message fails)
-    if (ENGINE_STATE === 'GAME_ACTIVE' && allAlivePlayers.length === 1 && allAlivePlayers[0].id === myId && !isSpectatorRef.current) {
-        // We only trigger victory if some time has passed since match start to avoid instant lobby wins
-        const timeSinceStart = Date.now() - (startTimeRef.current || 0);
-        if (timeSinceStart > 5000) {
-            setMatchResult({ isWinner: true, winnerName: nickname || 'You' });
-            
-            const endTime = Date.now();
-            endTimeRef.current = endTime;
-            const start = startTimeRef.current || (endTime - 1000);
-            const durationSecs = Math.floor((endTime - start) / 1000);
-            const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-            const secs = (durationSecs % 60).toString().padStart(2, '0');
-            
-            setMatchStats({
-              duration: `${mins}:${secs}`,
-              maxArmy: maxArmyRef.current,
-              towersBuilt: towersBuiltRef.current,
-              kills: killsRef.current
-            });
-            
-            ENGINE_STATE = 'MATCH_RESULTS';
-            setGameState('MATCH_RESULTS');
-            gameStateRef.current = 'MATCH_RESULTS';
-            saveFinalStats(true);
-            setIsSpectator(true);
-        }
-    }
-
-    // LOCAL DEATH DETECTION (Robust server synchronization)
-    if (ENGINE_STATE === 'GAME_ACTIVE' && !isSpectatorRef.current && p && p.units.length === 0) {
-        socketRef.current?.emit('commander_death_detected', { 
-            roomId: currentRoomRef.current?.id, 
-            winnerId: null, 
-            loserId: myId 
-        });
-
-        setMatchResult({ isWinner: false, winnerName: 'Enemy Commander' });
-        
-        const endTime = Date.now();
-        endTimeRef.current = endTime;
-        const start = startTimeRef.current || (endTime - 1000);
-        const durationSecs = Math.floor((endTime - start) / 1000);
-        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-        const secs = (durationSecs % 60).toString().padStart(2, '0');
-        
-        setMatchStats({
-          duration: `${mins}:${secs}`,
-          maxArmy: maxArmyRef.current,
-          towersBuilt: towersBuiltRef.current,
-          kills: killsRef.current
-        });
-        
-        ENGINE_STATE = 'MATCH_RESULTS';
-        setGameState('MATCH_RESULTS');
-        gameStateRef.current = 'MATCH_RESULTS';
-        saveFinalStats(false);
-        setIsSpectator(true);
-    }
-
     if (isMultiplayer && p && socketRef.current && currentRoomRef.current && (Date.now() - lastSyncTimeRef.current > CLIENT_SYNC_INTERVAL) && !isSpectatorRef.current) {
       lastSyncTimeRef.current = Date.now();
       
@@ -5012,7 +4848,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         empireId: p.empireId, 
         unitCount: p.units.length, 
         akce: p.akce, 
-        hp: p.units[0]?.hp || 100, 
+        hp: p.units[0]?.hp || COMMANDER_MAX_HP, 
         isAttacking: p.isAttacking, 
         isDashing: p.isDashing, 
         isUnderground: p.isUnderground ?? false, 
