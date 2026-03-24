@@ -985,6 +985,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     socket.on('remote_building_destroyed', (data: { buildingId: string }) => {
       const targetId = String(data.buildingId || data);
+      
+      // Try filtering towers
+      const initialTowersLen = towersRef.current.length;
       towersRef.current = towersRef.current.filter(t => {
         const match = String(t.id) === targetId;
         if (match) {
@@ -998,6 +1001,19 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
         return !match;
       });
+
+      // If not found in towers, try filtering tunnels
+      if (towersRef.current.length === initialTowersLen) {
+        tunnelsRef.current = tunnelsRef.current.filter(t => {
+          const match = String(t.id) === targetId;
+          if (match) {
+            for(let i=0; i<8; i++) {
+              createDust(t.pos.x, t.pos.y, '#78350f');
+            }
+          }
+          return !match;
+        });
+      }
     });
 
     socket.on('remote_gate_toggled', (data: { buildingId: string, isOpen: boolean }) => {
@@ -1209,15 +1225,28 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socket.on('remote_building_placed', (data: any) => {
       const bId = String(data.buildingId || data.id);
       if (!bId) return;
-      if (towersRef.current.some(t => String(t.id) === bId)) return;
-
+      
       // Detect type correctly (Wall, Gate, Tower or Tunnel)
       let type: 'wall' | 'gate' | 'tower' | 'tunnel' = 'tower';
       if (data.type === 'WALL' || data.type === 'wall') type = 'wall';
       else if (data.type === 'GATE' || data.type === 'gate') type = 'gate';
-      else if (data.type === 'tunnel') type = 'tunnel';
+      else if (data.type === 'tunnel' || data.type === 'pit') type = 'tunnel';
 
-      const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : (type === 'tunnel' ? 999999 : TOWER_MAX_HP);
+      if (type === 'tunnel') {
+        if (tunnelsRef.current.some(t => String(t.id) === bId)) return;
+        tunnelsRef.current.push({
+          id: bId,
+          ownerId: data.ownerId || data.faction,
+          pos: { x: data.x, y: data.y },
+          color: data.faction,
+          connectedId: data.connectedId
+        } as any);
+        return;
+      }
+
+      if (towersRef.current.some(t => String(t.id) === bId)) return;
+
+      const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : TOWER_MAX_HP;
 
       // Try to determine empireId from faction color if missing
       let bEmpireId = data.empireId;
@@ -2377,8 +2406,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               hp: 999999
             };
             
-            // OPTIMISTIC UPDATE: Add to towersRef (the common building array)
-            towersRef.current.push({
+            // OPTIMISTIC UPDATE: Add to tunnelsRef (Separated from buildings)
+            tunnelsRef.current.push({
                 id: newTunnelObj.id,
                 ownerId: p.id,
                 pos: { x: newTunnelObj.x, y: newTunnelObj.y },
@@ -2390,7 +2419,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 empireId: p.empireId,
                 rotation: 0,
                 isOpen: false
-            });
+            } as any);
             
             if (socketProxyRef.current) {
               const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
@@ -3367,9 +3396,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         // Tunnel Entrance Interaction
         if (ent.id === sid) {
             let foundTunnel: any = null;
-            // Now look for tunnels inside towers array
-            towersRef.current.forEach(b => {
-                if (b.type === ('tunnel' as any) && getDistance(head.pos, b.pos) < 120) {
+            // Now look for tunnels inside tunnels array (separated from buildings)
+            tunnelsRef.current.forEach(b => {
+                if (getDistance(head.pos, b.pos) < 120) {
                     foundTunnel = b;
                 }
             });
@@ -3401,12 +3430,13 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const isOwner = foundTunnel && (foundTunnel.ownerId === myId || foundTunnel.ownerId === playerRef.current?.id);
             if (foundTunnel && isOwner && isRPressedLocal) {
                 const tid = foundTunnel.id;
-                towersRef.current = towersRef.current.filter(b => b.id !== tid);
+                // Local removal
+                tunnelsRef.current = tunnelsRef.current.filter(b => b.id !== tid);
                 
                 if (socketProxyRef.current) {
                     const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
-                    console.log("EMITTING TUNNEL DESTROY:", tid);
-                    socketProxyRef.current.emit('building_destroyed', { roomId: currentRoomId, buildingId: tid });
+                    console.log("EMITTING HIDE PIT:", tid);
+                    socketProxyRef.current.emit('hide_pit', { roomId: currentRoomId, id: tid });
                 }
                 if (keysRef.current['r']) keysRef.current['r'] = false;
                 if (keysRef.current['R']) keysRef.current['R'] = false;
@@ -3422,7 +3452,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             // Underground players ignore obstacles and towers
             const obstaclesToUse = ent.isUnderground ? [] : gameMapRef.current.obstacles;
-            const towersToUse = ent.isUnderground ? [] : towersRef.current;
+            const towersToUse = ent.isUnderground ? [] : towersRef.current; // Tunnels are already separate and ignored here
             
             const nextPos = resolveCollision(head.pos, { x: ent.velocity.x * finalSpd, y: ent.velocity.y * finalSpd }, obstaclesToUse, towersToUse);
             if (nextPos.x > 0 && nextPos.x < currentWorldSize) head.pos.x = nextPos.x;
@@ -4966,15 +4996,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
       });
 
-      towersRef.current.forEach(t => {
+      // Tunnels (Separate from buildings)
+      tunnelsRef.current.forEach(t => {
         if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
-        
         const p = playerRef.current;
-        const isTunnel = (t.type as any) === 'tunnel';
-
-        // NEW: Layer Isolation for buildings
-        // If underground, ONLY draw tunnels. Hide walls/gates/towers.
-        if (p?.isUnderground && !isTunnel) return;
 
         // Fog of War: Hide enemy buildings if too far (unless spectator)
         if (!isSpectatorRef.current && localHeadPos) {
@@ -4985,82 +5010,98 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ctx.save();
         ctx.translate(t.pos.x, t.pos.y);
         
-        if (isTunnel) {
-            // --- DRAW TUNNEL (HOLE) ---
-            ctx.fillStyle = '#3e2723'; // Dark dirt
-            ctx.beginPath(); ctx.ellipse(0, 0, 40, 25, 0, 0, Math.PI * 2); ctx.fill();
-            ctx.fillStyle = '#4e342e'; // Lighter dirt detail
-            ctx.beginPath(); ctx.ellipse(0, 0, 25, 15, 0, 0, Math.PI * 2); ctx.fill();
-            ctx.fillStyle = 'rgba(0,0,0,0.7)'; // Hole
-            ctx.beginPath(); ctx.ellipse(0, 0, 15, 8, 0, 0, Math.PI * 2); ctx.fill();
+        // --- DRAW TUNNEL (HOLE) ---
+        ctx.fillStyle = '#3e2723'; // Dark dirt
+        ctx.beginPath(); ctx.ellipse(0, 0, 40, 25, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#4e342e'; // Lighter dirt detail
+        ctx.beginPath(); ctx.ellipse(0, 0, 25, 15, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(0,0,0,0.7)'; // Hole
+        ctx.beginPath(); ctx.ellipse(0, 0, 15, 8, 0, 0, Math.PI * 2); ctx.fill();
 
-            // Interaction Hint (Match Gate Style)
-            if (localHeadPos && gameState === 'GAME_ACTIVE') {
-              const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
-              if (dist < 300) {
-                const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-                const isOwner = t.ownerId === myId || t.ownerId === playerRef.current?.id;
-                
-                ctx.save();
-                // 1. [F] ENTER/EXIT Bubble
-                ctx.fillStyle = 'rgba(0,0,0,0.85)';
-                ctx.beginPath();
-                ctx.rect(-45, -85, 90, 24);
-                ctx.fill();
-                ctx.strokeStyle = '#fbbf24';
-                ctx.lineWidth = 1;
-                ctx.stroke();
+        // Interaction Hint
+        if (localHeadPos && gameState === 'GAME_ACTIVE') {
+          const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+          if (dist < 300) {
+            const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+            const isOwner = t.ownerId === myId || t.ownerId === playerRef.current?.id;
+            
+            ctx.save();
+            // 1. [F] ENTER/EXIT Bubble
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
+            ctx.beginPath();
+            ctx.rect(-45, -85, 90, 24);
+            ctx.fill();
+            ctx.strokeStyle = '#fbbf24';
+            ctx.lineWidth = 1;
+            ctx.stroke();
 
-                if (isMobile) {
-                  ctx.fillStyle = '#fbbf24';
-                  ctx.font = 'bold 10px Inter, sans-serif';
-                  ctx.textAlign = 'center';
-                  ctx.fillText('TAP TO ' + (p?.isUnderground ? 'EXIT' : 'ENTER'), 0, -68);
-                } else {
-                  ctx.fillStyle = '#fbbf24';
-                  ctx.font = 'bold 14px Inter, sans-serif';
-                  ctx.textAlign = 'center';
-                  ctx.fillText('F', -30, -68);
-                  ctx.fillStyle = '#ffffff';
-                  ctx.font = '10px Inter, sans-serif';
-                  ctx.textAlign = 'left';
-                  ctx.fillText(p?.isUnderground ? 'EXIT' : 'ENTER', -15, -68);
-                }
+            if (isMobile) {
+              ctx.fillStyle = '#fbbf24';
+              ctx.font = 'bold 10px Inter, sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText('TAP TO ' + (p?.isUnderground ? 'EXIT' : 'ENTER'), 0, -68);
+            } else {
+              ctx.fillStyle = '#fbbf24';
+              ctx.font = 'bold 14px Inter, sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText('F', -30, -68);
+              ctx.fillStyle = '#ffffff';
+              ctx.font = '10px Inter, sans-serif';
+              ctx.textAlign = 'left';
+              ctx.fillText(p?.isUnderground ? 'EXIT' : 'ENTER', -15, -68);
+            }
 
-                // 2. [R] HIDE Bubble (Only for owner)
-                if (isOwner) {
-                  ctx.translate(0, -30);
-                  ctx.fillStyle = 'rgba(0,0,0,0.85)';
-                  ctx.beginPath();
-                  ctx.rect(-45, -85, 90, 24);
-                  ctx.fill();
-                  ctx.strokeStyle = '#ef4444';
-                  ctx.lineWidth = 1;
-                  ctx.stroke();
+            // 2. [R] HIDE Bubble (Only for owner)
+            if (isOwner) {
+              ctx.translate(0, -30);
+              ctx.fillStyle = 'rgba(0,0,0,0.85)';
+              ctx.beginPath();
+              ctx.rect(-45, -85, 90, 24);
+              ctx.fill();
+              ctx.strokeStyle = '#ef4444';
+              ctx.lineWidth = 1;
+              ctx.stroke();
 
-                  if (isMobile) {
-                    ctx.fillStyle = '#ef4444';
-                    ctx.font = 'bold 10px Inter, sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.fillText('TAP TO HIDE', 0, -68);
-                  } else {
-                    ctx.fillStyle = '#ef4444';
-                    ctx.font = 'bold 14px Inter, sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.fillText('R', -30, -68);
-                    ctx.fillStyle = '#ffffff';
-                    ctx.font = '10px Inter, sans-serif';
-                    ctx.textAlign = 'left';
-                    ctx.fillText('HIDE', -15, -68);
-                  }
-                }
-                ctx.restore();
+              if (isMobile) {
+                ctx.fillStyle = '#ef4444';
+                ctx.font = 'bold 10px Inter, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('TAP TO HIDE', 0, -68);
+              } else {
+                ctx.fillStyle = '#ef4444';
+                ctx.font = 'bold 14px Inter, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('R', -30, -68);
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '10px Inter, sans-serif';
+                ctx.textAlign = 'left';
+                ctx.fillText('HIDE PIT', -15, -68);
               }
             }
             ctx.restore();
-            return; // Skip the rest of building drawing for tunnels
+          }
+        }
+        ctx.restore();
+      });
+
+      towersRef.current.forEach(t => {
+        if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
+        
+        const p = playerRef.current;
+
+        // NEW: Layer Isolation for buildings
+        // If underground, hide walls/gates/towers.
+        if (p?.isUnderground) return;
+
+        // Fog of War: Hide enemy buildings if too far (unless spectator)
+        if (!isSpectatorRef.current && localHeadPos) {
+          const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+          if (d > VISION_RADIUS && t.ownerId !== myId) return;
         }
 
+        ctx.save();
+        ctx.translate(t.pos.x, t.pos.y);
+        
         // Auto-detect empire style if missing or neutral (rendering safety)
         let renderEmpireId = t.empireId;
         if (!renderEmpireId || renderEmpireId === 'neutral') {
