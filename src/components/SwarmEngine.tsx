@@ -1520,7 +1520,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     const dist = getDistance(p.units[0].pos, attackerPos);
                     // Maximum engagement range is ~60px + unit radius. 
                     // Allow some buffer (e.g., 180px) for high-speed dashes and network jitter.
-                    if (dist > 180) {
+                    if (dist > 234) {
                         return; // Discard damage if attacker is too far on our screen
                     }
                 }
@@ -1744,17 +1744,18 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       if (isItMe) {
         const localPlayer = playerRef.current;
         if (!localPlayer || localPlayer.id !== pid || !localPlayer.units[0]) return;
+        const localHead = localPlayer.units[0];
 
         if (typeof data.x === 'number' && typeof data.y === 'number') {
-          localPlayer.targetPos = { x: data.x, y: data.y };
-          localPlayer.lastPos = { x: data.x, y: data.y };
-        }
-        if (typeof data.rotation === 'number') {
-          localPlayer.targetAngle = data.rotation;
-          localPlayer.facingAngle = data.rotation;
+          const serverPos = { x: data.x, y: data.y };
+          if (getDistance(localHead.pos, serverPos) > 200) {
+            localHead.pos = serverPos;
+            localPlayer.targetPos = serverPos;
+            localPlayer.lastPos = serverPos;
+          }
         }
         if (authoritativeHp !== undefined) {
-          localPlayer.units[0].hp = authoritativeHp;
+          localHead.hp = authoritativeHp;
         }
         if (authoritativeTotalCount !== undefined) {
           while (localPlayer.units.length > authoritativeTotalCount) {
@@ -1763,7 +1764,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           while (localPlayer.units.length < authoritativeTotalCount && localPlayer.units[0]) {
             localPlayer.units.push({
               id: generateId('u'),
-              pos: { ...localPlayer.units[0].pos },
+              pos: { ...localHead.pos },
               color: localPlayer.color,
               type: 'infantry',
               hp: 100
