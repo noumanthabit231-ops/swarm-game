@@ -81,6 +81,19 @@ const EMPIRE_COLORS = {
   neutral: '#78350f' // Holop Burlap
 };
 
+const images: any = {
+  tower_green: new Image(),
+  tower_red: new Image(),
+  tower_blue: new Image(),
+  pit: new Image(),
+  wall: new Image()
+};
+images.tower_green.src = '/assets/images/tower_green.png';
+images.tower_red.src = '/assets/images/tower_red.png';
+images.tower_blue.src = '/assets/images/tower_blue.png';
+images.pit.src = '/assets/images/pit.png';
+images.wall.src = '/assets/images/wall.png';
+
 const SPAWN_POINTS = [
     { x: 500, y: 500 },
     { x: 3500, y: 3500 },
@@ -718,7 +731,6 @@ const drawTunnel = (ctx: CanvasRenderingContext2D, t: any, localHeadPos: any, VI
     const ty = t.pos.y;
     if (!isPointInView(tx, ty, 100)) return;
 
-    // Fog of War check
     if (!isSpectator && localHeadPos) {
         const d = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
         if (d > VISION_RADIUS && t.ownerId !== myId) return;
@@ -726,27 +738,10 @@ const drawTunnel = (ctx: CanvasRenderingContext2D, t: any, localHeadPos: any, VI
 
     ctx.save();
     ctx.translate(tx, ty);
-
-    // Внешний круг - коричневый
-    ctx.fillStyle = '#5d4037';
-    ctx.beginPath();
-    ctx.arc(0, 0, 50, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Внутренний круг - черный
-    ctx.fillStyle = '#000000';
-    ctx.beginPath();
-    ctx.arc(0, 0, 35, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Метка фракции
-    ctx.fillStyle = t.color || '#78350f';
-    ctx.beginPath();
-    ctx.arc(0, -40, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    const size = 100;
+    if (images.pit && images.pit.complete) {
+      ctx.drawImage(images.pit, -size / 2, -size / 2, size, size);
+    }
 
     ctx.restore();
 };
@@ -881,48 +876,13 @@ const drawBuilding = (
         }
     } else if (t.type === 'tower') {
         if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
-        const rx=46, ry=18, ty0=-20, h=52;
-        if (renderEmpireId === 'rim') {
-          const topGrad = ctx.createLinearGradient(-rx, ty0-ry, rx, ty0+ry);
-          topGrad.addColorStop(0,'#e8c39e'); topGrad.addColorStop(1,'#c79a6b');
-          ctx.fillStyle = topGrad;
-          ctx.beginPath(); ctx.moveTo(0,ty0-ry); ctx.lineTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(-rx,ty0); ctx.closePath(); ctx.fill();
-          const sideGrad = ctx.createLinearGradient(rx, ty0, rx, ty0+h);
-          sideGrad.addColorStop(0,'#b58857'); sideGrad.addColorStop(1,'#7a5530');
-          ctx.fillStyle = sideGrad;
-          ctx.beginPath(); ctx.moveTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(0,ty0+ry+h); ctx.lineTo(rx,ty0+h); ctx.closePath(); ctx.fill();
-          ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
-          for(let y=ty0+6;y<ty0+h;y+=6){ctx.beginPath();ctx.moveTo(2,y);ctx.lineTo(rx-2,y-3);ctx.stroke();}
-          const rbx=40, rby=24, rTop=ty0-ry-8;
-          const roofGrad = ctx.createLinearGradient(-rbx, rTop, rbx, rTop-90);
-          roofGrad.addColorStop(0, (t.color||'#ef4444')); roofGrad.addColorStop(1,'#7f1d1d');
-          ctx.fillStyle = roofGrad;
-          ctx.beginPath(); ctx.moveTo(-rbx, rTop); ctx.lineTo(rbx, rTop); ctx.lineTo(0, rTop-110); ctx.closePath(); ctx.fill();
-        } else if (renderEmpireId === 'fim') {
-          ctx.fillStyle = '#e5e7eb';
-          ctx.beginPath(); ctx.moveTo(0,ty0-ry); ctx.lineTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(-rx,ty0); ctx.closePath(); ctx.fill();
-          ctx.fillStyle = '#cbd5e1';
-          ctx.beginPath(); ctx.moveTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(0,ty0+ry+h+30); ctx.lineTo(rx,ty0+h+30); ctx.closePath(); ctx.fill();
-          ctx.fillStyle = '#d1d5db';
-          ctx.beginPath(); ctx.moveTo(-24,ty0-6); ctx.lineTo(24,ty0-6); ctx.lineTo(18,ty0-120); ctx.lineTo(-18,ty0-120); ctx.closePath(); ctx.fill();
-          ctx.fillStyle = '#94a3b8';
-          for(let x=-22;x<=22;x+=10){ctx.fillRect(x,ty0-120,6,8);}
-          const roofGrad = ctx.createLinearGradient(-18, ty0-120, 18, ty0-170);
-          roofGrad.addColorStop(0, (t.color||'#3b82f6')); roofGrad.addColorStop(1,'#1e3a8a');
-          ctx.fillStyle = roofGrad;
-          ctx.beginPath(); ctx.moveTo(-24,ty0-120); ctx.lineTo(24,ty0-120); ctx.lineTo(0,ty0-180); ctx.closePath(); ctx.fill();
-        } else {
-          ctx.fillStyle = '#9ca3af';
-          ctx.beginPath(); ctx.moveTo(0,ty0-ry); ctx.lineTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(-rx,ty0); ctx.closePath(); ctx.fill();
-          ctx.fillStyle = '#6b7280';
-          ctx.beginPath(); ctx.moveTo(rx,ty0); ctx.lineTo(0,ty0+ry); ctx.lineTo(0,ty0+ry+h); ctx.lineTo(rx,ty0+h); ctx.closePath(); ctx.fill();
-          ctx.fillStyle = '#4b5563';
-          for(let i=-2;i<=2;i++){ctx.fillRect(rx-14, ty0+8+i*12, 6, 10);}
-          const domeGrad = ctx.createRadialGradient(0, ty0-ry-26, 6, 0, ty0-ry-26, 42);
-          domeGrad.addColorStop(0,(t.color||'#2dd4bf')); domeGrad.addColorStop(1,'#0d9488');
-          ctx.fillStyle = domeGrad;
-          ctx.beginPath(); ctx.ellipse(0, ty0-ry-6, 42, 28, 0, Math.PI, 0); ctx.fill();
-          ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(0, ty0-ry-34, 5, 0, Math.PI*2); ctx.fill();
+        let faction = 'green';
+        if (renderEmpireId === 'rim') faction = 'red';
+        else if (renderEmpireId === 'fim') faction = 'blue';
+        const img = images[`tower_${faction}`];
+        const size = 120;
+        if (img && img.complete) {
+          ctx.drawImage(img, -size / 2, -size / 2, size, size);
         }
     }
     
