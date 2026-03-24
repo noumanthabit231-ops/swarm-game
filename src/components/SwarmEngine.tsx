@@ -3,7 +3,6 @@ import Joystick from './Joystick';
 import { Crown, Shield, Sword, Check, ArrowLeft, Users, Zap,
   WifiOff,
   RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
-import { io, Socket } from 'socket.io-client';
 import { cn } from '../utils/cn';
 
 import { EmpireType } from './SelectionScreen';
@@ -21,6 +20,187 @@ interface SwarmEngineProps {
 }
 
 const SOCKET_URL = (import.meta as any).env?.VITE_SOCKET_URL || 'https://server-for-sultans-game-production.up.railway.app';
+const CLIENT_SYNC_INTERVAL = 50;
+const SYNC_PACKET_HEADER_SIZE = 25;
+const SYNC_PACKET_UNIT_COUNT_SENTINEL = 0xffffffff;
+const syncPacketEncoder = new TextEncoder();
+
+type SocketEventHandler = (data?: any) => void;
+type SocketAnyHandler = (eventName: string, data?: any) => void;
+
+const getTransportUrl = (input: string) => {
+  if (!input) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}`;
+  }
+
+  try {
+    const url = new URL(input);
+    if (url.protocol === 'http:') url.protocol = 'ws:';
+    if (url.protocol === 'https:') url.protocol = 'wss:';
+    return url.toString();
+  } catch {
+    if (input.startsWith('ws://') || input.startsWith('wss://')) return input;
+    if (input.startsWith('/')) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.host}${input}`;
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    return `${protocol}${input.replace(/^\/+/, '')}`;
+  }
+};
+
+const createSyncPacket = (payload: Record<string, any> = {}) => {
+  const extras = { ...payload };
+  delete extras.x;
+  delete extras.y;
+  delete extras.rotation;
+  delete extras.hp;
+  delete extras.unitCount;
+
+  const extraBytes = syncPacketEncoder.encode(JSON.stringify(extras));
+  const buffer = new ArrayBuffer(SYNC_PACKET_HEADER_SIZE + extraBytes.length);
+  const view = new DataView(buffer);
+  const x = typeof payload.x === 'number' ? payload.x : Number.NaN;
+  const y = typeof payload.y === 'number' ? payload.y : Number.NaN;
+  const rotation = typeof payload.rotation === 'number' ? payload.rotation : Number.NaN;
+  const hp = typeof payload.hp === 'number' ? payload.hp : Number.NaN;
+  const unitCount = typeof payload.unitCount === 'number'
+    ? Math.max(0, Math.floor(payload.unitCount))
+    : SYNC_PACKET_UNIT_COUNT_SENTINEL;
+
+  view.setFloat32(0, x, true);
+  view.setFloat32(4, y, true);
+  view.setFloat32(8, rotation, true);
+  view.setFloat32(12, hp, true);
+  view.setUint32(16, unitCount, true);
+  view.setUint8(20, payload.isUnderground ? 1 : 0);
+  view.setUint32(21, extraBytes.length, true);
+  new Uint8Array(buffer, SYNC_PACKET_HEADER_SIZE).set(extraBytes);
+
+  return buffer;
+};
+
+class UwsSocketClient {
+  id = '';
+  connected = false;
+  private readonly url: string;
+  private ws: WebSocket | null = null;
+  private readonly listeners = new Map<string, Set<SocketEventHandler>>();
+  private readonly anyListeners = new Set<SocketAnyHandler>();
+  private manuallyClosed = false;
+
+  constructor(url: string) {
+    this.url = getTransportUrl(url);
+    this.connect();
+  }
+
+  private dispatch(eventName: string, data?: any) {
+    if (eventName === 'set_id' && typeof data === 'string') {
+      this.id = data;
+    }
+
+    this.anyListeners.forEach((handler) => handler(eventName, data));
+
+    const handlers = this.listeners.get(eventName);
+    if (!handlers) return;
+    handlers.forEach((handler) => handler(data));
+  }
+
+  private handleMessage = (event: MessageEvent) => {
+    if (typeof event.data !== 'string') return;
+
+    let payload: any;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (!payload || typeof payload.type !== 'string') return;
+    this.dispatch(payload.type, payload.data);
+  };
+
+  emit(eventName: string, data?: any) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    if (eventName === 'sync_data') {
+      this.ws.send(createSyncPacket(data));
+      return;
+    }
+
+    this.ws.send(JSON.stringify({ type: eventName, data }));
+  }
+
+  on(eventName: string, handler: SocketEventHandler) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, new Set());
+    }
+    this.listeners.get(eventName)!.add(handler);
+  }
+
+  off(eventName: string, handler?: SocketEventHandler) {
+    const handlers = this.listeners.get(eventName);
+    if (!handlers) return;
+
+    if (handler) {
+      handlers.delete(handler);
+    } else {
+      handlers.clear();
+    }
+
+    if (handlers.size === 0) {
+      this.listeners.delete(eventName);
+    }
+  }
+
+  onAny(handler: SocketAnyHandler) {
+    this.anyListeners.add(handler);
+  }
+
+  connect() {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+
+    this.manuallyClosed = false;
+    this.id = '';
+    const ws = new WebSocket(this.url);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      this.connected = true;
+      this.dispatch('connect');
+    };
+
+    ws.onerror = () => {
+      if (!this.connected) {
+        this.dispatch('connect_error');
+      }
+    };
+
+    ws.onclose = () => {
+      const wasConnected = this.connected;
+      this.connected = false;
+      if (wasConnected || this.manuallyClosed) {
+        this.dispatch('disconnect');
+      } else {
+        this.dispatch('connect_error');
+      }
+    };
+
+    ws.onmessage = this.handleMessage;
+    this.ws = ws;
+  }
+
+  disconnect() {
+    this.manuallyClosed = true;
+    const activeSocket = this.ws;
+    this.ws = null;
+    this.connected = false;
+    if (activeSocket && (activeSocket.readyState === WebSocket.OPEN || activeSocket.readyState === WebSocket.CONNECTING)) {
+      activeSocket.close();
+    }
+  }
+}
 
 const WORLD_SIZE = 4000;
 const LOBBY_WORLD_SIZE = 1200;
@@ -604,7 +784,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
 
   // Networking State
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<UwsSocketClient | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
   const lastUIUpdateTimeRef = useRef<number>(0); // NEW: Throttle React state updates
   const [isHost, setIsHost] = useState(false);
@@ -722,10 +902,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
       }
     });
+
   }, [myId]);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
+    const socket = new UwsSocketClient(SOCKET_URL);
     socketRef.current = socket;
 
     socket.onAny((eventName) => {
@@ -733,15 +914,19 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
 
     socket.on('connect', () => {
-      setMyId(socket.id || '');
       setNetworkStatus('Ready');
       setSocketConnected(true);
       setLastEvent('Connected');
+      if (socket.id) setMyId(socket.id);
     });
 
     socket.on('disconnect', () => {
       setSocketConnected(false);
       setLastEvent('Disconnected');
+    });
+
+    socket.on('set_id', (id: string) => {
+      setMyId(id || '');
     });
 
     socket.on('connect_error', () => {
@@ -755,11 +940,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setDiscoveredRooms(Array.isArray(rooms) ? rooms : []);
     });
 
-    socket.on('update_rooms', (rooms: Room[]) => {
-      setLastEvent('update_rooms');
-      setDiscoveredRooms(Array.isArray(rooms) ? rooms : []);
-    });
-
     socket.on('server_capacity', (data: { active: number, max: number }) => {
       setServerCapacity(data);
     });
@@ -770,33 +950,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     socket.on('queue_approved', () => {
       setQueuePosition(null);
-    });
-
-    socket.on('room_created', (room: Room) => {
-      setLastEvent('room_created');
-      setCurrentRoom(room);
-      currentRoomRef.current = room; // Sync ref immediately
-      (window as any).currentRoomId = room.id; // Global fallback
-      const hostFlag = room.hostId === socket.id;
-      setIsHost(hostFlag);
-      isHostRef.current = hostFlag;
-      setIsMultiplayer(true);
-      
-      // Forced cleanup before lobby starts
-      entitiesRef.current = [];
-      remotePlayersRef.current.clear();
-      
-      ENGINE_STATE = 'LOBBY_WAITING';
-      setGameState('LOBBY_WAITING');
-      gameStateRef.current = 'LOBBY_WAITING';
-      
-      // Update info on server immediately
-      socket.emit('update_player_name', { roomId: room.id, name: nickname, empireId: initialEmpire.id });
-      socket.emit('request_tunnels', { roomId: room.id }); // NEW: Get tunnels on join
-      
-      const players = room.players || [];
-      setLobbyPlayers(players);
-      startLobbyArena(players);
     });
 
     socket.on('join_success', (roomData: Room) => {
@@ -819,6 +972,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       const players = roomData.players || [];
       setLobbyPlayers(players);
       syncRemotePlayers(players);
+      setIsCreatingRoom(false);
       setIsJoiningRoom(false);
       setIsMultiplayer(true);
       ENGINE_STATE = 'LOBBY_WAITING';
@@ -839,10 +993,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     socket.on('error', (msg: string) => {
       console.error("[SOCKET ERROR]", msg);
+      setLastEvent('error: ' + msg);
       showError(msg);
-      // Reset connection states
       setIsCreatingRoom(false);
       setIsJoiningRoom(false);
+      setIsSpectator(false);
       setGameState('MENU');
       ENGINE_STATE = 'MENU';
     });
@@ -917,41 +1072,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           color: 'rgba(255, 200, 50, 0.5)',
           type: 'dust'
         });
-      }
-    });
-
-    socket.on('remote_commander_down', (deadId: string) => {
-      const idx = entitiesRef.current.findIndex(e => e.id === deadId);
-      if (idx !== -1) {
-        entitiesRef.current[idx].units = [];
-      }
-    });
-
-    socket.on('you_died', (data?: { winnerName?: string, winnerId?: string }) => {
-      if (ENGINE_STATE === 'GAME_ACTIVE') {
-        const killer = data?.winnerName && data.winnerName !== 'Enemy' ? data.winnerName : getKillerName(data?.winnerId || null);
-        setMatchResult({ isWinner: false, winnerName: killer });
-        setKillerName(killer);
-        
-        const endTime = Date.now();
-        endTimeRef.current = endTime;
-        const start = startTimeRef.current || (endTime - 1000);
-        const durationSecs = Math.floor((endTime - start) / 1000);
-        const mins = Math.floor(durationSecs / 60).toString().padStart(2, '0');
-        const secs = (durationSecs % 60).toString().padStart(2, '0');
-        
-        setMatchStats({
-          duration: `${mins}:${secs}`,
-          maxArmy: maxArmyRef.current,
-          towersBuilt: towersBuiltRef.current,
-          kills: killsRef.current
-        });
-
-        ENGINE_STATE = 'MATCH_RESULTS';
-        setGameState('MATCH_RESULTS');
-        gameStateRef.current = 'MATCH_RESULTS';
-        saveFinalStats(false);
-        setIsSpectator(true);
       }
     });
 
@@ -1265,6 +1385,13 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             if (targetUnit) {
                 const damage = data.damage || 34;
                 targetUnit.hp -= damage;
+                if (p.units.length === 1 && currentRoomRef.current) {
+                  socketRef.current?.emit('remote_hp_sync', {
+                    roomId: currentRoomRef.current.id,
+                    id: socketRef.current?.id || myIdRef.current,
+                    hp: Math.max(0, targetUnit.hp)
+                  });
+                }
                 if (targetUnit.hp <= 0) {
                     if (p.units.length === 1) {
                         // Commander is dying
@@ -1348,25 +1475,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     });
 
-    socket.on('remote_neutral_recruited', (data: { neutralId: string }) => {
-      neutralsRef.current = neutralsRef.current.filter(n => n.id !== data.neutralId);
+    socket.on('remote_hp_sync', (data: { id: string, hp: number }) => {
+      if (!data?.id) return;
+      const localId = socket.id || myIdRef.current;
+      if (data.id === localId) return;
+
+      const target = remotePlayersRef.current.get(data.id) || entitiesRef.current.find(e => e.id === data.id);
+      if (target?.units[0]) {
+        target.units[0].hp = data.hp;
+      }
     });
 
-    socket.on('error', (msg: string) => {
-      setLastEvent('error: ' + msg);
-      alert(msg);
-      ENGINE_STATE = 'MENU';
-      setGameState('MENU');
-      setIsJoiningRoom(false);
-      setIsCreatingRoom(false);
-      setIsSpectator(false);
-    });
-
-    socket.on('countdown', (count: number) => {
-      setLastEvent('countdown: ' + count);
-      setCountdown(count);
-    });
-    
     socket.on('start_countdown', (seconds: number) => {
       setLastEvent('start_countdown');
       let ticks = seconds;
@@ -1463,16 +1582,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     });
 
-    socket.on('start_game', (data: { seed: number, players: Entity[] }) => {
-      setLastEvent('start_game');
-      setIsSpectator(false);
-      ENGINE_STATE = 'GAME_ACTIVE';
-      setGameState('GAME_ACTIVE');
-      gameStateRef.current = 'GAME_ACTIVE';
-      const gameSeed = data?.seed || 0.5;
-      initGame(gameSeed, data.players);
-    });
-    
     socket.on('match_started', (data: { seed: number, players: Entity[] }) => {
       setLastEvent('match_started');
       setIsSpectator(false);
@@ -1792,55 +1901,40 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     });
 
-    socket.on('player_left', (playerId: string) => {
-      // Remove from all local collections immediately
-      entitiesRef.current = entitiesRef.current.filter(e => e.id !== playerId);
-      remotePlayersRef.current.delete(playerId);
-      
-      setLobbyPlayers(prev => {
-        const next = prev.filter(p => p.id !== playerId);
-        lobbyPlayersRef.current = next;
-        return next;
-      });
-      
-      // Force leaderboard refresh
-      const remainingAlive = entitiesRef.current.filter(e => e.units.length > 0);
-      setLeaderboard(remainingAlive.map(e => ({ name: e.name, score: e.units.length })).sort((a, b) => b.score - a.score).slice(0, 5));
-      setActivePlayers(remainingAlive.length);
-    });
-
-    // PURGE: player_joined listener removed as per GHOST PROTOCOL - Handled strictly by room_update
-
-    // ANTI-THROTTLING HEARTBEAT
-    const heartbeat = setInterval(() => {
-      if (socket.connected) {
-        socket.emit('heartbeat', { id: socket.id, time: Date.now() });
-      }
-    }, 1000);
-
     return () => {
       socket.off('connect');
+      socket.off('disconnect');
+      socket.off('set_id');
       socket.off('connect_error');
       socket.off('room_list');
-      socket.off('update_rooms');
-      socket.off('room_created');
       socket.off('join_success');
       socket.off('remote_building_destroyed');
       socket.off('remote_building_hit');
       socket.off('remote_gate_toggled');
       socket.off('remote_tower_fire');
       socket.off('remote_building_placed');
-      socket.off('remote_commander_down');
-      socket.off('you_died');
       socket.off('take_unit_damage');
+      socket.off('remote_hp_sync');
       socket.off('room_update');
       socket.off('start_countdown');
       socket.off('match_started');
       socket.off('update_rematch_votes');
       socket.off('rematch_started');
+      socket.off('remote_garrison_hit');
+      socket.off('garrison_destroyed');
+      socket.off('player_eliminated');
+      socket.off('game_over_final');
+      socket.off('remote_tunnel_update');
+      socket.off('remote_tunnel_remove');
+      socket.off('sync_tunnels');
+      socket.off('attack_event');
+      socket.off('sync_world');
+      socket.off('server_capacity');
+      socket.off('queue_update');
+      socket.off('queue_approved');
+      socket.off('village_spawned');
       socket.off('error');
       socket.disconnect();
-      clearInterval(heartbeat);
     };
   }, []);
 
@@ -3451,7 +3545,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         // LOCAL GARRISON LOGIC (Calculated only by owner/host)
         if (g.units.length === 1 && g.mode !== 'RECALL') {
             g.mode = 'RECALL';
-            if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' });
         }
 
         // Throttle heavy AI/Detection logic (every 10 frames for each garrison)
@@ -3487,7 +3580,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
                 if (nearestEnemyDist < 450) {
                     g.mode = 'HUNT';
-                    if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
                     // FIXED: Immediate target acquisition on transition to prevent "stuck" frames
                     shouldRunHeavyLogic = true; 
                 } else {
@@ -3497,7 +3589,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         const d = getDistance(g.pos, t.pos);
                         if (d < 450) {
                             g.mode = 'HUNT';
-                            if (isMultiplayer) socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' });
                             shouldRunHeavyLogic = true;
                         }
                     });
@@ -4751,8 +4842,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         setIsSpectator(true);
     }
 
-    // Network Sync (33Hz for better combat accuracy)
-    if (isMultiplayer && p && socketRef.current && currentRoomRef.current && (Date.now() - lastSyncTimeRef.current > 30) && !isSpectatorRef.current) {
+    if (isMultiplayer && p && socketRef.current && currentRoomRef.current && (Date.now() - lastSyncTimeRef.current > CLIENT_SYNC_INTERVAL) && !isSpectatorRef.current) {
       lastSyncTimeRef.current = Date.now();
       
       // SYNC GARRISONS: Owner sends their own, Host sends AI-owned
@@ -6940,21 +7030,21 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   
                   <div className='grid grid-cols-3 gap-1 md:gap-2'>
                     <button 
-                      onClick={() => { g.mode = 'HOLD'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HOLD' }); }}
+                      onClick={() => { g.mode = 'HOLD'; }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'HOLD' ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Shield size={10} className='md:w-4 md:h-4' />
                       <span className='text-[6px] md:text-[8px] font-black uppercase tracking-tighter'>{t.hold}</span>
                     </button>
                     <button 
-                      onClick={() => { g.mode = 'HUNT'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'HUNT' }); }}
+                      onClick={() => { g.mode = 'HUNT'; }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'HUNT' ? 'bg-red-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Sword size={10} className='md:w-4 md:h-4' />
                       <span className='text-[6px] md:text-[8px] font-black uppercase tracking-tighter'>{t.hunt}</span>
                     </button>
                     <button 
-                      onClick={() => { g.mode = 'RECALL'; socketRef.current?.emit('garrison_update', { id: g.id, mode: 'RECALL' }); }}
+                      onClick={() => { g.mode = 'RECALL'; }}
                       className={`p-1 md:p-2 rounded-md md:rounded-lg flex flex-col items-center justify-center gap-0.5 md:gap-1 transition-all ${g.mode === 'RECALL' ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
                     >
                       <Zap size={10} className='md:w-4 md:h-4' />
