@@ -1520,7 +1520,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     const dist = getDistance(p.units[0].pos, attackerPos);
                     // Maximum engagement range is ~60px + unit radius. 
                     // Allow some buffer (e.g., 180px) for high-speed dashes and network jitter.
-                    if (dist > 234) {
+                    if (dist > 250) {
                         return; // Discard damage if attacker is too far on our screen
                     }
                 }
@@ -1746,14 +1746,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (!localPlayer || localPlayer.id !== pid || !localPlayer.units[0]) return;
         const localHead = localPlayer.units[0];
 
-        if (typeof data.x === 'number' && typeof data.y === 'number') {
-          const serverPos = { x: data.x, y: data.y };
-          if (getDistance(localHead.pos, serverPos) > 50) {
-            localHead.pos = serverPos;
-            localPlayer.targetPos = serverPos;
-            localPlayer.lastPos = serverPos;
-          }
-        }
         if (authoritativeHp !== undefined) {
           localHead.hp = authoritativeHp;
         }
@@ -3902,11 +3894,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             for (let i = neighbors.length - 1; i >= 0; i--) {
               const neighbor = neighbors[i];
               if (neighbor.entityId !== 'neutral') continue;
-              if (getDistance(head.pos, neighbor.unit.pos) < 140) {
+              if (getDistance(head.pos, neighbor.unit.pos) < 400) {
                 ent.units.push({ ...neighbor.unit, color: ent.color, empireId: ent.empireId });
                 neutralsRef.current = neutralsRef.current.filter(nu => nu.id !== neighbor.unit.id);
                 neighbors.splice(i, 1);
                 if (ent.id === myId) { 
+                  socketRef.current?.emit('pickup_unit', {
+                    roomId: currentRoomRef.current?.id,
+                    recruitedIds: [neighbor.unit.id]
+                  });
                   setTotalRecruitsMatch(r => r + 1); 
                   setScore(ent.units.length);
                   pendingRecruitsRef.current.add(neighbor.unit.id);
