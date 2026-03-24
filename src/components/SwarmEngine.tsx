@@ -1501,7 +1501,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           const isMe = data.targetPlayerId === socket.id || data.targetPlayerId === myId;
           if (!isMe) return;
 
-          const p = playerRef.current;
+        const p = playerRef.current;
           if (p && p.units.length > 0) {
             // VERIFY DISTANCE ON VICTIM SIDE (Prevent lag-hits from afar)
             // If the attacker is another player or AI, we check if they are actually close enough on OUR screen.
@@ -1563,6 +1563,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
                 }
                 p.lastKnownUnitCount = authoritativeSoldierCount;
+                p.score = authoritativeSoldierCount;
                 setScore(authoritativeSoldierCount);
             }
           }
@@ -1734,7 +1735,46 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       const pid = String(data.id);
       const isItMe = pid === socket.id || pid === myId;
 
-      if (isItMe) return;
+      const authoritativeSoldierCount = typeof data.unitCount === 'number'
+        ? Math.max(0, Math.floor(data.unitCount))
+        : undefined;
+      const authoritativeTotalCount = authoritativeSoldierCount !== undefined ? authoritativeSoldierCount + 1 : undefined;
+      const authoritativeHp = typeof data.hp === 'number' ? data.hp : undefined;
+
+      if (isItMe) {
+        const localPlayer = playerRef.current;
+        if (!localPlayer || localPlayer.id !== pid || !localPlayer.units[0]) return;
+
+        if (typeof data.x === 'number' && typeof data.y === 'number') {
+          localPlayer.targetPos = { x: data.x, y: data.y };
+          localPlayer.lastPos = { x: data.x, y: data.y };
+        }
+        if (typeof data.rotation === 'number') {
+          localPlayer.targetAngle = data.rotation;
+          localPlayer.facingAngle = data.rotation;
+        }
+        if (authoritativeHp !== undefined) {
+          localPlayer.units[0].hp = authoritativeHp;
+        }
+        if (authoritativeTotalCount !== undefined) {
+          while (localPlayer.units.length > authoritativeTotalCount) {
+            localPlayer.units.pop();
+          }
+          while (localPlayer.units.length < authoritativeTotalCount && localPlayer.units[0]) {
+            localPlayer.units.push({
+              id: generateId('u'),
+              pos: { ...localPlayer.units[0].pos },
+              color: localPlayer.color,
+              type: 'infantry',
+              hp: 100
+            });
+          }
+          localPlayer.lastKnownUnitCount = authoritativeSoldierCount;
+          localPlayer.score = authoritativeSoldierCount;
+          setScore(authoritativeSoldierCount);
+        }
+        return;
+      }
 
       // FIXED: Block updates for players who were recently killed locally
       if (recentlyDestroyedPlayers.current.has(pid)) {
@@ -1819,7 +1859,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           }
         }
 
-        const remoteSoldierCount = typeof data.unitCount === 'number' ? Math.max(0, Math.floor(data.unitCount)) : Math.max(0, ent.units.length - 1);
+        const remoteSoldierCount = authoritativeSoldierCount !== undefined ? authoritativeSoldierCount : Math.max(0, ent.units.length - 1);
         ent.score = remoteSoldierCount;
         ent.isDashing = data.isDashing;
         ent.isAttacking = data.isAttacking;
@@ -1835,8 +1875,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             });
           }
           
-          if (data.unitCount !== undefined) {
-            const desiredSoldierCount = Math.max(0, Math.floor(data.unitCount));
+          if (authoritativeSoldierCount !== undefined) {
+            const desiredSoldierCount = authoritativeSoldierCount;
             const desiredTotalCount = desiredSoldierCount + 1;
             const currentCount = ent.units.length;
             
