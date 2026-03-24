@@ -1540,7 +1540,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 const authoritativeSoldierCount = typeof data.currentUnitCount === 'number'
                   ? Math.max(0, Math.floor(data.currentUnitCount))
                   : Math.max(0, p.units.length - 1);
-                const authoritativeTotalUnits = Math.max(1, authoritativeSoldierCount + 1);
+                const authoritativeTotalUnits = authoritativeSoldierCount + 1;
                 const authoritativeHp = typeof data.currentHp === 'number'
                   ? data.currentHp
                   : (p.units[0]?.hp || COMMANDER_MAX_HP);
@@ -1563,7 +1563,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
                 }
                 p.lastKnownUnitCount = authoritativeSoldierCount;
-                setScore(Math.max(0, p.units.length - 1));
+                setScore(authoritativeSoldierCount);
             }
           }
       }
@@ -1782,7 +1782,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ent.lastUpdate = Date.now(); 
         ent.akce = data.akce;
         ent.name = data.name || ent.name; 
-        remotePlayersRef.current.set(pid, ent);
         
         if (data.empireId || data.faction || data.name) {
           const currentEmpire = data.empireId || ent.empireId;
@@ -1842,12 +1841,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const currentCount = ent.units.length;
             
             if (desiredTotalCount > currentCount) {
-              const timeSinceKill = Date.now() - (ent.lastDamageTime || 0);
-              if (timeSinceKill > 2000) { 
-                  const diff = desiredTotalCount - currentCount;
-                  for (let i = 0; i < diff; i++) {
-                    ent.units.push({ id: generateId('u'), pos: { ...realPos }, color: ent.color, type: 'infantry', hp: 100 });
-                  }
+              const diff = desiredTotalCount - currentCount;
+              for (let i = 0; i < diff; i++) {
+                ent.units.push({ id: generateId('u'), pos: { ...realPos }, color: ent.color, type: 'infantry', hp: 100 });
               }
             } else if (desiredTotalCount < currentCount) {
               ent.units = ent.units.slice(0, desiredTotalCount);
@@ -1855,6 +1851,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             ent.lastKnownUnitCount = desiredSoldierCount;
           }
         }
+        remotePlayersRef.current.set(pid, ent);
         
         if (data.garrisons && Array.isArray(data.garrisons)) {
           data.garrisons.forEach((rg: any) => {
@@ -3991,40 +3988,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                       });
                   }
                   
-                  // Apply local damage
-                  n.unit.hp -= damageVal;
                   targetObj.lastDamageTime = now;
                   frameDamageMap.set(entityHitKey, frameDamageMap.get(entityHitKey)! + 1);
-
-                  if (n.unit.hp <= 0) {
-                      // CRITICAL: VISUAL PREDICTION
-                      // If I am the attacker, I remove the unit locally IMMEDIATELY so it feels smooth.
-                      // If I am the victim, I remove it because it's my unit and I'm the authority.
-                      // If it's a garrison or AI, we also remove it locally.
-                      if (isTargetGarrison || tOwnerId === myId || !isMultiplayer || (e1.id === myId)) {
-                          unitsToRemove.add(n.unit.id);
-                      }
-                      
-                      e1.swingKills = (e1.swingKills || 0) + 1;
-                      // "Hunting" reward: Killing neutrals (Holops) gives more than regular kills
-                      const reward = (n.entityId === 'neutral') ? 15 : 5;
-                      e1.akce += reward; 
-                      if (e1.id === myId) { 
-                        killsRef.current++; 
-                        setKills(k => k + 1); 
-                        setPlayerAkce(e1.akce); 
-                        if (reward > 5) {
-                          // Visual indicator for "Hunting" success
-                          particlesRef.current.push({
-                            pos: { ...n.unit.pos },
-                            vel: { x: 0, y: -2 },
-                            life: 1, maxLife: 1, color: '#fbbf24', type: 'text',
-                            text: `+${reward} ${t.huntReward || 'HUNT'}`
-                          });
-                        }
-                      }
-                      createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
-                  }
+                  createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
                 }
               }
             }
@@ -4174,17 +4140,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     }
                   }
                   
-                  n.unit.hp -= damageVal;
                   targetObj.lastDamageTime = now;
                   frameDamageMap.set(garrisonHitKey, (frameDamageMap.get(garrisonHitKey) || 0) + 1);
-
-                  if (n.unit.hp <= 0) {
-                      if (isTargetGarrison || tOwnerId === myId || !isMultiplayer || isAttackerLocal || isAttackerHostAI) {
-                          unitsToRemove.add(n.unit.id);
-                      }
-                      g.swingKills = (g.swingKills || 0) + 1;
-                      createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
-                  }
+                  createSlash(n.unit.pos.x, n.unit.pos.y, tColor);
                 }
               }
             }
