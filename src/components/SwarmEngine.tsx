@@ -410,7 +410,7 @@ class MapGenerator {
   }
 }
 
-const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, isCommander: boolean, angle: number, isAttacking: boolean, attackTimer: number, opacity: number = 1.0, type: UnitType = 'infantry', empireId: EmpireType | 'neutral' = 'neutral', equippedItem?: string) => {
+const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, isCommander: boolean, angle: number, isAttacking: boolean, attackTimer: number, opacity: number = 1.0, type: UnitType = 'infantry', empireId: EmpireType | 'neutral' = 'neutral', equippedItem?: string, isUnderground: boolean = false) => {
     const scale = isCommander ? COMMANDER_SCALE : 1.0;
     const radius = UNIT_RADIUS * scale;
     const bob = Math.sin(Date.now() * 0.007) * 4;
@@ -426,6 +426,25 @@ const drawUnit = (ctx: CanvasRenderingContext2D, x: number, y: number, color: st
     ctx.save();
     ctx.globalAlpha = opacity;
     ctx.translate(x, y + bob);
+
+    // --- UNDERGROUND ATMOSPHERE ---
+    if (isUnderground) {
+      // 1. Subtle Glow
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = 'rgba(255, 255, 255, 0.2)';
+      
+      // 2. Dust Particles (Animated via time)
+      const t = Date.now() * 0.001;
+      ctx.fillStyle = 'rgba(212, 163, 115, 0.4)'; // Dirt color
+      for(let i=0; i<3; i++) {
+        const px = Math.cos(t + i * 2) * radius * 1.5;
+        const py = Math.sin(t * 0.8 + i) * radius * 1.2;
+        ctx.beginPath();
+        ctx.arc(px, py, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     ctx.rotate(angle + Math.PI / 2);
 
     // Shadow
@@ -673,24 +692,45 @@ const drawTunnel = (ctx: CanvasRenderingContext2D, t: any, localHeadPos: any, VI
     ctx.save();
     ctx.translate(tx, ty);
 
-    // Draw the pit (dark hole)
-    ctx.fillStyle = '#1a1a1a';
+    // 1. Dirt Mound (Atmospheric rim)
     ctx.beginPath();
-    ctx.ellipse(0, 0, 40, 25, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 0, 52, 35, 0, 0, Math.PI * 2);
+    const moundGrad = ctx.createRadialGradient(0, 0, 35, 0, 0, 52);
+    moundGrad.addColorStop(0, '#5d4037'); // Inner dirt
+    moundGrad.addColorStop(1, 'transparent'); // Blend with grass
+    ctx.fillStyle = moundGrad;
     ctx.fill();
 
-    // Dirt mound around it
-    ctx.strokeStyle = '#78350f';
-    ctx.lineWidth = 4;
+    // 2. The Pit (Deep hole effect)
+    const pitGrad = ctx.createRadialGradient(0, 0, 5, 0, 0, 45);
+    pitGrad.addColorStop(0, '#000000'); // Dead center (deepest)
+    pitGrad.addColorStop(0.6, '#1a1a1a'); // Middle
+    pitGrad.addColorStop(1, '#3e2723'); // Edge of the hole
+    
     ctx.beginPath();
     ctx.ellipse(0, 0, 45, 30, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.fillStyle = pitGrad;
+    ctx.fill();
 
-    // Faction indicator
+    // 3. Earth Cracks / Texture around the edge
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 1.5;
+    for(let i=0; i<8; i++) {
+      const ang = (i / 8) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ang) * 40, Math.sin(ang) * 25);
+      ctx.lineTo(Math.cos(ang) * 55, Math.sin(ang) * 35);
+      ctx.stroke();
+    }
+
+    // 4. Faction indicator (Flag or Marker)
     ctx.fillStyle = t.color || '#78350f';
     ctx.beginPath();
-    ctx.arc(0, -35, 5, 0, Math.PI * 2);
+    ctx.arc(0, -35, 6, 0, Math.PI * 2);
     ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
 
     ctx.restore();
 };
@@ -708,7 +748,7 @@ const drawBuilding = (
   buildingMap: Map<string, Tower>,
   playerColor?: string
 ) => {
-    // --- DATA SAFETY CHECK (v2.9.3) ---
+    // --- DATA SAFETY CHECK ---
     if (!t) return;
     const tx = t.pos?.x !== undefined ? t.pos.x : t.x;
     const ty = t.pos?.y !== undefined ? t.pos.y : t.y;
@@ -716,10 +756,10 @@ const drawBuilding = (
     if (tx === undefined || ty === undefined) return;
     if (!isPointInView(tx, ty, 150)) return;
     
-    // Layer Isolation for buildings: If underground, hide walls/gates/towers.
+    // Layer Isolation
     if (isUnderground) return;
 
-    // Fog of War: Hide enemy buildings if too far (unless spectator)
+    // Fog of War
     if (!isSpectator && localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined) {
       const d = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
       if (d > VISION_RADIUS && t.ownerId !== myId) return;
@@ -728,7 +768,12 @@ const drawBuilding = (
     ctx.save();
     ctx.translate(tx, ty);
     
-    // Auto-detect empire style if missing or neutral (rendering safety)
+    // Shadow for depth
+    ctx.shadowColor = 'rgba(0,0,0,0.4)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 5;
+    ctx.shadowOffsetY = 5;
+
     let renderEmpireId = t.empireId;
     if (!renderEmpireId || renderEmpireId === 'neutral') {
       const owner = entities.find(e => e.id === t.ownerId || e.color === t.color);
@@ -749,312 +794,159 @@ const drawBuilding = (
         const hasPrev = isH ? (n_l && (n_l.type==='wall' || n_l.type==='gate')) : (n_t && (n_t.type==='wall' || n_t.type==='gate'));
         const hasNext = isH ? (n_r && (n_r.type==='wall' || n_r.type==='gate')) : (n_b && (n_b.type==='wall' || n_b.type==='gate'));
 
-        // Exact boundaries: 35 is grid edge, 55 is overlap into neighbor
         const drawStart = hasPrev ? -55 : -35;
         const drawEnd = hasNext ? 55 : 35;
         const drawLen = drawEnd - drawStart;
 
         if (renderEmpireId === 'rim') {
-          // --- Russian Palisade (Засека) ---
-          ctx.fillStyle = '#4e342e';
+          // --- Russian Palisade (Wood Texture) ---
+          const wallGrad = ctx.createLinearGradient(drawStart, 0, drawEnd, 0);
+          wallGrad.addColorStop(0, '#4e342e');
+          wallGrad.addColorStop(0.5, '#5d4037');
+          wallGrad.addColorStop(1, '#4e342e');
+          ctx.fillStyle = wallGrad;
           ctx.fillRect(drawStart, -15, drawLen, 30);
           
-          // Log Pattern
-          ctx.fillStyle = '#5d4037';
-          const logWidth = 10;
-          const startLog = Math.floor(drawStart / logWidth);
-          const endLog = Math.ceil(drawEnd / logWidth);
-          for(let i = startLog; i < endLog; i++) {
-            const x = i * logWidth;
-            const h = 20 + Math.sin(i * 1.5) * 5;
-            ctx.beginPath();
-            ctx.moveTo(x + 1, -15);
-            ctx.lineTo(x + 5, -15 - h);
-            ctx.lineTo(x + 9, -15);
-            ctx.fill();
+          // Log lines (vertical)
+          ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+          ctx.lineWidth = 1;
+          for(let i=drawStart; i<drawEnd; i+=8) {
+            ctx.beginPath(); ctx.moveTo(i, -15); ctx.lineTo(i, 15); ctx.stroke();
           }
-          // Iron Reinforcement Bands
-          ctx.fillStyle = '#334155';
-          ctx.fillRect(drawStart, -5, drawLen, 4);
-          ctx.fillRect(drawStart, 10, drawLen, 4);
         } else if (renderEmpireId === 'fim') {
-          // --- French Bastion Wall (Stone & Iron) ---
+          // --- French Bastion (Stone Blocks) ---
           ctx.fillStyle = '#cbd5e1';
           ctx.fillRect(drawStart, -18, drawLen, 36);
-          // Stone texture (repeating every 14px)
+          // Stone Texture (Hatching)
           ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
-          const step = 14;
-          const sIdx = Math.floor(drawStart / step);
-          const eIdx = Math.ceil(drawEnd / step);
-          for(let i = sIdx; i <= eIdx; i++) {
-            ctx.beginPath(); ctx.moveTo(i*step, -18); ctx.lineTo(i*step, 18); ctx.stroke();
+          for(let i=drawStart; i<drawEnd; i+=15) {
+            ctx.beginPath(); ctx.moveTo(i, -18); ctx.lineTo(i, 18); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i+15, 0); ctx.stroke();
           }
-          ctx.beginPath(); ctx.moveTo(drawStart, 0); ctx.lineTo(drawEnd, 0); ctx.stroke();
-          // Golden Top Railing
-          ctx.fillStyle = '#fbbf24';
-          ctx.fillRect(drawStart, -22, drawLen, 4);
         } else {
-          // --- Ottoman Sandstone Wall ---
+          // --- Ottoman Sandstone (Islamic Pattern) ---
           ctx.fillStyle = '#d4a373';
           ctx.fillRect(drawStart, -15, drawLen, 35);
-          // Islamic Geometric Pattern
-          ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1.5;
-          const step = 15;
-          const sIdx = Math.floor(drawStart / step);
-          const eIdx = Math.ceil(drawEnd / step);
-          for(let i = sIdx; i <= eIdx; i++) {
-            ctx.save(); ctx.translate(i*step, 5); ctx.rotate(Math.PI/4); ctx.strokeRect(-4, -4, 8, 8); ctx.restore();
-          }
-          // Battlements
-          ctx.fillStyle = '#bc8a5f';
-          const bStep = 20;
-          const bsIdx = Math.floor(drawStart / bStep);
-          const beIdx = Math.ceil(drawEnd / bStep);
-          for(let i = bsIdx; i < beIdx; i++) {
-            ctx.fillRect(i*bStep + 3, -25, 14, 10);
+          ctx.strokeStyle = '#bc8a5f'; ctx.lineWidth = 1;
+          for(let i=drawStart; i<drawEnd; i+=20) {
+            ctx.strokeRect(i+5, -10, 10, 10);
           }
         }
         
-        // Faction Accent (Always centered)
+        // Faction color band
         ctx.fillStyle = t.color;
-        ctx.fillRect(-10, 5, 20, 5);
+        ctx.globalAlpha = 0.7;
+        ctx.fillRect(drawStart + 5, 5, drawLen - 10, 4);
+        ctx.globalAlpha = 1.0;
 
-        // DRAW JOINTS FOR PERPENDICULAR CORNERS (Bridge the 20px gap)
-        ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Back to world space
-        const jointColor = renderEmpireId === 'rim' ? '#4e342e' : (renderEmpireId === 'fim' ? '#cbd5e1' : '#d4a373');
-        const thickness = renderEmpireId === 'fim' ? 36 : 30;
-        const halfThick = thickness / 2;
-
-        if (isH) {
-          if (n_t && (n_t.type === 'wall' || n_t.type === 'gate')) {
-            ctx.fillStyle = jointColor;
-            ctx.fillRect(-halfThick, -35, thickness, 20); // Bridge Up (15 to 35)
-          }
-          if (n_b && (n_b.type === 'wall' || n_b.type === 'gate')) {
-            ctx.fillStyle = jointColor;
-            ctx.fillRect(-halfThick, 15, thickness, 20); // Bridge Down (15 to 35)
-          }
-        } else {
-          if (n_l && (n_l.type === 'wall' || n_l.type === 'gate')) {
-            ctx.fillStyle = jointColor;
-            ctx.fillRect(-35, -halfThick, 20, thickness); // Bridge Left
-          }
-          if (n_r && (n_r.type === 'wall' || n_r.type === 'gate')) {
-            ctx.fillStyle = jointColor;
-            ctx.fillRect(15, -halfThick, 20, thickness); // Bridge Right
-          }
-        }
-        ctx.rotate((t.rotation || 0) * Math.PI / 180); // Restore rotation for HUD
-
-        // Health Bar (Wall) - Fixed clamping and added Shield Icon
-        ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate for HUD
-        const maxHp = (t.type === 'tower') ? TOWER_MAX_HP : (t.type === 'gate' ? GATE_MAX_HP : WALL_MAX_HP);
-        if (t.hp < maxHp - 0.01) { // Show immediately after first hit
-          const bWidth = 50;
-          const hRatio = Math.max(0, Math.min(1, t.hp / maxHp));
-          const clampedW = Math.max(0, Math.min(bWidth, bWidth * hRatio));
-          ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-25, -45, bWidth, 6);
-          ctx.fillStyle = '#ef4444'; ctx.fillRect(-25, -45, bWidth, 6);
-          ctx.fillStyle = '#22c55e'; ctx.fillRect(-25, -45, clampedW, 6);
-          
-          // HP TEXT (e.g. "9 / 10")
-          ctx.font = 'bold 12px Inter, sans-serif';
-          ctx.fillStyle = '#ffffff';
-          ctx.textAlign = 'center';
-          ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-          ctx.fillText(`${Math.ceil(t.hp)} / ${maxHp}`, 0, -55);
-          ctx.shadowBlur = 0;
-
-          ctx.font = '10px Inter';
-          ctx.textAlign = 'right';
-          ctx.fillText('🛡️', -28, -40);
-        }
-        ctx.rotate((t.rotation || 0) * Math.PI / 180); // Re-rotate for cracks
-
-        // Cracked Texture (Wall)
-        if (t.hp <= 20) {
-          ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)'; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.moveTo(-20, -10); ctx.lineTo(-10, 5); ctx.lineTo(0, -5); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(10, 5); ctx.lineTo(20, -10); ctx.stroke();
-        }
     } else if (t.type === 'gate') {
-        const gx = Math.round(t.pos.x / GRID_SIZE);
-        const gy = Math.round(t.pos.y / GRID_SIZE);
-        const n_t = buildingMap.get(`${gx}_${gy-1}`);
-        const n_b = buildingMap.get(`${gx}_${gy+1}`);
-        const n_l = buildingMap.get(`${gx-1}_${gy}`);
-        const n_r = buildingMap.get(`${gx+1}_${gy}`);
-
         if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
         
         if (renderEmpireId === 'rim') {
-          // --- Russian Log Gate (Теремные Ворота) ---
-          // Massive Side Pillars (Logs)
+          // --- Russian Gate (Heavy Timber) ---
           ctx.fillStyle = '#3e2723';
-          ctx.fillRect(-35, -25, 12, 50); // Left log
-          ctx.fillRect(23, -25, 12, 50);  // Right log
-          
-          // Roof (Upper beam)
-          ctx.fillStyle = '#2b1d1a';
-          ctx.beginPath();
-          ctx.moveTo(-38, -25); ctx.lineTo(0, -40); ctx.lineTo(38, -25); ctx.lineTo(38, -18); ctx.lineTo(-38, -18);
-          ctx.fill();
-
-          if (t.isOpen) {
-              ctx.fillStyle = '#1a1a1a';
-              ctx.fillRect(-23, -20, 46, 40);
-          } else {
-              ctx.fillStyle = '#4e342e';
-              ctx.fillRect(-23, -20, 46, 40);
-              // Planks
-              ctx.strokeStyle = '#2b1d1a'; ctx.lineWidth = 2;
-              for(let i=-18; i<=18; i+=6) {
-                ctx.beginPath(); ctx.moveTo(i, -20); ctx.lineTo(i, 20); ctx.stroke();
-              }
+          ctx.fillRect(-45, -25, 90, 50);
+          if (!t.isOpen) {
+            // Wood Grain
+            ctx.strokeStyle = '#2b1d1a'; ctx.lineWidth = 2;
+            for(let i=-35; i<=35; i+=10) {
+              ctx.beginPath(); ctx.moveTo(i, -20); ctx.lineTo(i, 20); ctx.stroke();
+            }
+            // Iron Reinforcements
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(-40, -10, 80, 4); ctx.fillRect(-40, 10, 80, 4);
           }
         } else if (renderEmpireId === 'fim') {
-          // --- French Portcullis (Iron Grating) ---
+          // --- French Gate (Ornate Iron) ---
           ctx.fillStyle = '#64748b';
-          ctx.fillRect(-45, -25, 90, 50);
-          
-          if (t.isOpen) {
-              ctx.fillStyle = '#0f172a';
-              ctx.fillRect(-35, -20, 70, 40);
-          } else {
-              ctx.fillStyle = '#334155';
-              ctx.fillRect(-35, -20, 70, 40);
-              // Iron Grids
-              ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2;
-              for(let i=-30; i<=30; i+=10) {
-                ctx.beginPath(); ctx.moveTo(i, -20); ctx.lineTo(i, 20); ctx.stroke();
-              }
-              for(let j=-15; j<=15; j+=10) {
-                ctx.beginPath(); ctx.moveTo(-35, j); ctx.lineTo(35, j); ctx.stroke();
-              }
+          ctx.fillRect(-50, -25, 100, 50);
+          if (!t.isOpen) {
+            ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 3;
+            for(let i=-40; i<=40; i+=12) {
+              ctx.beginPath(); ctx.moveTo(i, -20); ctx.lineTo(i, 20); ctx.stroke();
+            }
+            // Golden Fleur-de-lis style dots
+            ctx.fillStyle = '#fbbf24';
+            for(let i=-40; i<=40; i+=24) {
+              ctx.beginPath(); ctx.arc(i, 0, 3, 0, Math.PI*2); ctx.fill();
+            }
           }
         } else {
-          // --- Ottoman Gate (Golden Details) ---
+          // --- Ottoman Gate (Golden Arch) ---
           ctx.fillStyle = '#bc8a5f';
-          ctx.fillRect(-50, -25, 100, 50);
-          
-          if (t.isOpen) {
-              ctx.fillStyle = '#1a1a1a';
-              ctx.fillRect(-40, -20, 80, 40);
-          } else {
-              ctx.fillStyle = '#d4a373';
-              ctx.fillRect(-40, -20, 80, 40);
-              // Arch detail
-              ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3;
-              ctx.beginPath(); ctx.arc(0, 0, 15, Math.PI, 0); ctx.stroke();
+          ctx.fillRect(-55, -25, 110, 50);
+          if (!t.isOpen) {
+            ctx.fillStyle = '#d4a373';
+            ctx.beginPath(); ctx.moveTo(-40, 20); ctx.lineTo(-40, -5); ctx.quadraticCurveTo(0, -35, 40, -5); ctx.lineTo(40, 20); ctx.fill();
+            ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+            ctx.stroke();
           }
-        }
-
-        // Interaction Hint (Press F to Open/Close) - Only for owner
-        if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && (t.ownerId === myId || t.color === playerColor || t.faction === playerColor)) {
-            const dist = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-            if (dist < 150) {
-                const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-                ctx.save();
-                ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate to draw text horizontally
-                
-                // Bubble background
-                ctx.fillStyle = 'rgba(0,0,0,0.8)';
-                ctx.beginPath();
-                ctx.rect(-50, -65, 100, 24);
-                ctx.fill();
-                ctx.strokeStyle = '#fbbf24';
-                ctx.lineWidth = 1;
-                ctx.stroke();
-
-                ctx.fillStyle = '#fbbf24';
-                ctx.font = 'bold 10px Inter, sans-serif';
-                ctx.textAlign = 'center';
-                const actionTxt = isMobile ? 'TAP TO ' + (t.isOpen ? 'CLOSE' : 'OPEN') : 'F : ' + (t.isOpen ? 'CLOSE' : 'OPEN');
-                ctx.fillText(actionTxt, 0, -49);
-                ctx.restore();
-            }
         }
     } else if (t.type === 'tower') {
-        ctx.rotate((t.rotation || 0) * Math.PI / 180);
+        if (t.rotation) ctx.rotate(t.rotation * Math.PI / 180);
         
+        // Base Shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.beginPath(); ctx.arc(0, 0, 50, 0, Math.PI*2); ctx.fill();
+
         if (renderEmpireId === 'rim') {
-          // --- Russian Boyar Tower (Wooden & Conical) ---
-          ctx.fillStyle = '#3e2723';
-          ctx.beginPath();
-          ctx.moveTo(-45, 45); ctx.lineTo(45, 45);
-          ctx.lineTo(35, -35); ctx.lineTo(-35, -35);
-          ctx.fill();
+          // --- Russian Tower (Conical Green Roof) ---
+          const towerGrad = ctx.createLinearGradient(-40, 0, 40, 0);
+          towerGrad.addColorStop(0, '#3e2723');
+          towerGrad.addColorStop(0.5, '#5d4037');
+          towerGrad.addColorStop(1, '#3e2723');
+          ctx.fillStyle = towerGrad;
+          ctx.fillRect(-40, -40, 80, 80);
+          
           // Roof
           ctx.fillStyle = '#1b5e20';
-          ctx.beginPath();
-          ctx.moveTo(-50, -35); ctx.lineTo(50, -35);
-          ctx.lineTo(0, -85);
-          ctx.fill();
+          ctx.beginPath(); ctx.moveTo(-50, -40); ctx.lineTo(50, -40); ctx.lineTo(0, -100); ctx.fill();
+          // Flag
+          ctx.fillStyle = t.color;
+          ctx.fillRect(0, -110, 25, 15);
+          ctx.strokeStyle = '#ffffff'; ctx.strokeRect(0, -110, 25, 15);
         } else if (renderEmpireId === 'fim') {
-          // --- French Keep (Stone & Blue Roof) ---
+          // --- French Keep (Blue Spire) ---
           ctx.fillStyle = '#94a3b8';
-          ctx.fillRect(-40, -40, 80, 80);
-          ctx.strokeStyle = '#475569'; ctx.lineWidth = 4;
-          ctx.strokeRect(-40, -40, 80, 80);
-          // Blue Spired Roof
+          ctx.fillRect(-45, -45, 90, 90);
+          // Battlements
+          ctx.fillStyle = '#64748b';
+          for(let i=-45; i<45; i+=20) ctx.fillRect(i, -55, 10, 10);
+          
+          // Blue Roof Spire
           ctx.fillStyle = '#1e40af';
-          ctx.beginPath();
-          ctx.moveTo(-45, -45); ctx.lineTo(45, -45);
-          ctx.lineTo(0, -95);
-          ctx.fill();
+          ctx.beginPath(); ctx.moveTo(-40, -45); ctx.lineTo(40, -45); ctx.lineTo(0, -110); ctx.fill();
+          // Flag (Tricolor style)
+          ctx.fillStyle = t.color;
+          ctx.fillRect(0, -120, 30, 18);
         } else {
-          // Default Ottoman Tower
+          // --- Ottoman Tower (Domed) ---
           ctx.fillStyle = '#78350f';
           ctx.fillRect(-40, -40, 80, 80);
-          ctx.fillStyle = '#92400e';
-          ctx.fillRect(-35, -35, 70, 70);
-          // Roof
-          ctx.fillStyle = '#451a03';
-          ctx.beginPath();
-          ctx.moveTo(-45, -45); ctx.lineTo(45, -45);
-          ctx.lineTo(0, -90);
-          ctx.fill();
-        }
-        
-        // Faction Banner on top
-        ctx.fillStyle = t.color;
-        ctx.fillRect(-10, -30, 20, 10);
-        
-        // Interaction Hint (Press F to Open/Close) - Only for owner
-        if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && (t.ownerId === myId || t.color === playerColor || t.faction === playerColor)) {
-            const dist = getDistanceXY(localHeadPos.x, localHeadPos.y, tx, ty);
-            if (dist < 150) {
-                const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-                ctx.save();
-                ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Un-rotate to draw text horizontally
-                
-                // Bubble background
-                ctx.fillStyle = 'rgba(0,0,0,0.8)';
-                ctx.beginPath();
-                ctx.rect(-50, -115, 100, 24);
-                ctx.fill();
-                ctx.strokeStyle = '#fbbf24';
-                ctx.lineWidth = 1;
-                ctx.stroke();
-
-                ctx.fillStyle = '#fbbf24';
-                ctx.font = 'bold 10px Inter, sans-serif';
-                ctx.textAlign = 'center';
-                const actionTxt = isMobile ? 'TAP TO OPEN' : 'F : OPEN';
-                ctx.fillText(actionTxt, 0, -99);
-                ctx.restore();
-            }
+          // Dome
+          const domeGrad = ctx.createRadialGradient(0, -60, 5, 0, -60, 40);
+          domeGrad.addColorStop(0, '#0d9488');
+          domeGrad.addColorStop(1, '#065f46');
+          ctx.fillStyle = domeGrad;
+          ctx.beginPath(); ctx.arc(0, -40, 40, Math.PI, 0); ctx.fill();
+          // Crescent Gold
+          ctx.fillStyle = '#fbbf24';
+          ctx.beginPath(); ctx.arc(0, -85, 5, 0, Math.PI*2); ctx.fill();
         }
     }
     
-    // HP Bar (Universal for Towers/Gates)
-    if (t.type !== 'wall' && t.hp < t.maxHp) {
-        ctx.rotate(-(t.rotation || 0) * Math.PI / 180); // Ensure HP bar is horizontal
+    // Common HUD: HP Bar
+    ctx.restore();
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.shadowBlur = 0; // No shadow for HUD
+    const maxHp = (t.type === 'tower') ? TOWER_MAX_HP : (t.type === 'gate' ? GATE_MAX_HP : WALL_MAX_HP);
+    if (t.hp < maxHp - 0.01) {
         const barW = 60, barH = 6;
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(-barW/2, 50, barW, barH);
-        ctx.fillStyle = t.hp / t.maxHp > 0.3 ? '#22c55e' : '#ef4444';
-        ctx.fillRect(-barW/2, 50, barW * (t.hp / t.maxHp), barH);
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(-barW/2, 50, barW, barH);
+        const hpRatio = t.hp / maxHp;
+        ctx.fillStyle = hpRatio > 0.4 ? '#22c55e' : '#ef4444';
+        ctx.fillRect(-barW/2, 50, barW * hpRatio, barH);
     }
     ctx.restore();
 };
@@ -1206,28 +1098,21 @@ const drawVillage = (ctx: CanvasRenderingContext2D, v: any, isPointInView: (x: n
 const drawCaravan = (ctx: CanvasRenderingContext2D, c: any, isPointInView: (x: number, y: number, padding?: number) => boolean, isSpectator: boolean, isUnderground: boolean, sid: string, pHead: any) => {
     if (!c || !c.pos) return;
     if (!isPointInView(c.pos.x, c.pos.y, 100)) return;
-    // Layer isolation for Caravans (Surface only)
+    // Layer isolation
     if (!isSpectator && isUnderground) return;
 
     ctx.save();
     ctx.translate(c.pos.x, c.pos.y);
     
-    // Draw Escort Circle
+    // Escort Circle (VFX)
     const isMeEscorting = c.escortOwnerId === sid;
-
     if (isMeEscorting || (!c.escortOwnerId && pHead && getDistance(c.pos, pHead.pos) < 400)) {
         ctx.beginPath();
         ctx.arc(0, 0, 250, 0, Math.PI * 2);
-        ctx.fillStyle = isMeEscorting ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 255, 255, 0.05)';
+        ctx.fillStyle = isMeEscorting ? 'rgba(34, 197, 94, 0.05)' : 'rgba(255, 255, 255, 0.03)';
         ctx.fill();
-        ctx.strokeStyle = isMeEscorting ? 'rgba(34, 197, 94, 0.5)' : 'rgba(255, 255, 255, 0.2)';
-        ctx.lineWidth = 2;
-        if (isMeEscorting && (c.outOfCircleTime || 0) > 0) {
-            ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)'; // Red if out of bounds
-            ctx.fillStyle = 'rgba(239, 68, 68, 0.1)';
-            ctx.fill();
-            ctx.setLineDash([10, 10]);
-        }
+        ctx.strokeStyle = isMeEscorting ? 'rgba(34, 197, 94, 0.3)' : 'rgba(255, 255, 255, 0.1)';
+        ctx.setLineDash([5, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
     }
@@ -1235,116 +1120,58 @@ const drawCaravan = (ctx: CanvasRenderingContext2D, c: any, isPointInView: (x: n
     const ang = Math.atan2(c.targetPos.y - c.pos.y, c.targetPos.x - c.pos.x);
     ctx.rotate(ang);
     
-    // 1. Caravan Body
-    ctx.fillStyle = '#78350f';
-    ctx.fillRect(-30, -20, 60, 40);
-    ctx.fillStyle = '#92400e';
-    ctx.fillRect(-25, -15, 50, 30);
+    // 1. Wagon Body (Wood texture)
+    const wagonGrad = ctx.createLinearGradient(0, -20, 0, 20);
+    wagonGrad.addColorStop(0, '#78350f');
+    wagonGrad.addColorStop(0.5, '#92400e');
+    wagonGrad.addColorStop(1, '#78350f');
+    ctx.fillStyle = wagonGrad;
+    ctx.fillRect(-35, -22, 70, 44);
+    
+    // Wood planks
+    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+    ctx.lineWidth = 1;
+    for(let i=-20; i<=20; i+=10) {
+      ctx.beginPath(); ctx.moveTo(-35, i); ctx.lineTo(35, i); ctx.stroke();
+    }
 
-    // 2. Cargo
-    ctx.fillStyle = '#fbbf24'; // Gold boxes
-    ctx.fillRect(-15, -10, 15, 15);
-    ctx.fillRect(5, -5, 12, 12);
-    ctx.strokeStyle = '#78350f'; ctx.lineWidth = 1; ctx.strokeRect(-15, -10, 15, 15); ctx.strokeRect(5, -5, 12, 12);
+    // 2. Cargo (Stacked goods)
+    // Box 1
+    ctx.fillStyle = '#d97706';
+    ctx.fillRect(-20, -15, 20, 30);
+    ctx.strokeStyle = '#451a03'; ctx.strokeRect(-20, -15, 20, 30);
+    // Box 2 (Gold/Yellow)
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(5, -10, 15, 20);
+    ctx.strokeRect(5, -10, 15, 20);
+    // Rope holding cargo
+    ctx.strokeStyle = '#fef3c7'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-25, -15); ctx.lineTo(25, 15); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-25, 15); ctx.lineTo(25, -15); ctx.stroke();
 
-    // 3. Roof/Tent
+    // 3. Canopy/Tent (Canvas)
     ctx.fillStyle = '#fef3c7';
-    ctx.beginPath(); ctx.moveTo(-35, 0); ctx.quadraticCurveTo(0, -35, 35, 0); ctx.lineTo(35, 5); ctx.lineTo(-35, 5); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = '#d4a373'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-40, 0);
+    ctx.quadraticCurveTo(0, -45, 40, 0);
+    ctx.lineTo(40, 5);
+    ctx.lineTo(-40, 5);
+    ctx.fill();
+    ctx.strokeStyle = '#d4a373'; ctx.lineWidth = 1; ctx.stroke();
 
-    // 4. Wheels
-    ctx.fillStyle = '#271101';
-    const wheelRot = Date.now() * 0.01;
-    [[-20,-20], [20,-20], [-20,20], [20,20]].forEach(([wx, wy]) => {
-      ctx.save();
-      ctx.translate(wx, wy);
-      ctx.rotate(wheelRot);
-      ctx.fillRect(-5, -2, 10, 4);
-      ctx.fillRect(-2, -5, 4, 10);
-      ctx.restore();
+    // 4. Wheels (Dark slate)
+    ctx.fillStyle = '#1e293b';
+    [[-25,-25], [20,-25], [-25,21], [20,21]].forEach(([wx, wy]) => {
+      ctx.fillRect(wx, wy, 12, 5);
     });
 
     // 5. UI Overlay
-    ctx.rotate(-ang); // Un-rotate for text
-    
-    if (c.escortOwnerId) {
-        // Display active escort state
-        if (isMeEscorting) {
-            // Timer for local owner
-            ctx.fillStyle = 'white';
-            ctx.font = 'bold 24px Inter';
-            ctx.textAlign = 'center';
-            ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-            ctx.fillText(`${c.escortTimer}s`, 0, -65);
-            
-            ctx.font = 'bold 10px Inter';
-            ctx.fillStyle = '#22c55e';
-            ctx.fillText('PROTECTING', 0, -90);
-            
-            if ((c.outOfCircleTime || 0) > 0) {
-                const rem = Math.max(0, (3000 - (c.outOfCircleTime || 0)) / 1000).toFixed(1);
-                ctx.fillStyle = '#ef4444';
-                ctx.font = 'bold 14px Inter';
-                ctx.fillText(`RETURN! ${rem}s`, 0, -110);
-            }
-        } else {
-            // Name for others
-            ctx.fillStyle = 'white';
-            ctx.font = 'bold 12px Inter';
-            ctx.textAlign = 'center';
-            ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-            ctx.fillText(`ESCORTED`, 0, -60);
-        }
-    } else {
-        // Display "Press F" hint
-        if (pHead && getDistance(c.pos, pHead.pos) < 250) {
-            const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-            ctx.save();
-            // Bubble
-            ctx.fillStyle = 'rgba(0,0,0,0.85)';
-            ctx.beginPath();
-            ctx.rect(-65, -100, 130, 28);
-            ctx.fill();
-            ctx.strokeStyle = '#fbbf24';
-            ctx.lineWidth = 2;
-            ctx.stroke();
+    ctx.rotate(-ang);
+    const hpW = 60;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(-hpW/2, 55, hpW, 6);
+    ctx.fillStyle = '#ef4444'; ctx.fillRect(-hpW/2, 55, hpW, 6);
+    ctx.fillStyle = '#22c55e'; ctx.fillRect(-hpW/2, 55, hpW * (c.hp / 100), 6);
 
-            if (isMobile) {
-                ctx.fillStyle = '#fbbf24';
-                ctx.font = 'bold 12px Inter, sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('TAP TO PROTECT', 0, -81);
-            } else {
-                // F Key
-                ctx.fillStyle = '#fbbf24';
-                ctx.font = 'bold 16px Inter, sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('F', -45, -81);
-                
-                // Text
-                ctx.fillStyle = 'white';
-                ctx.font = 'bold 11px Inter, sans-serif';
-                ctx.textAlign = 'left';
-                ctx.fillText('START PROTECT', -25, -81);
-            }
-            ctx.restore();
-        }
-    }
-    
-    // HP Bar
-    const hpW = 50;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(-25, -45, hpW, 6);
-    ctx.fillStyle = '#ef4444'; ctx.fillRect(-25, -45, hpW, 6);
-    ctx.fillStyle = '#22c55e'; ctx.fillRect(-25, -45, hpW * (c.hp / 100), 6);
-
-    // Caravan Label
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 12px Inter';
-    ctx.textAlign = 'center';
-    ctx.shadowBlur = 4; ctx.shadowColor = 'black';
-    ctx.fillText(`💰 CARAVAN`, 0, -40);
-    ctx.shadowBlur = 0;
-    
     ctx.restore();
 };
 
@@ -1483,7 +1310,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // Draw the unit centered in the cache canvas
     // Using a fixed time/bob for the cached version
-    drawUnit(ctx, size / 2, size / 2, color, isCommander, -Math.PI / 2, false, 0, 1.0, type, empireId);
+    drawUnit(ctx, size / 2, size / 2, color, isCommander, -Math.PI / 2, false, 0, 1.0, type, empireId, undefined, false);
 
     unitSpriteCacheRef.current.set(key, canvas);
     return canvas;
@@ -5921,7 +5748,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     // Use sprite for all non-attacking units (BATCH-LIKE)
                     ctx.drawImage(sprite, u.pos.x - sprite.width / 2, u.pos.y - sprite.height / 2);
                   } else {
-                    drawUnit(ctx, u.pos.x, u.pos.y, g.color, false, 0, i < 5, g.attackTimer, opacity, u.type, empireId);
+                    drawUnit(ctx, u.pos.x, u.pos.y, g.color, false, 0, i < 5, g.attackTimer, opacity, u.type, empireId, undefined, false);
                   }
               });
               ctx.globalAlpha = 1.0;
@@ -6084,30 +5911,33 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               if (i === 0 || !u || !u.pos) return; // Skip commander or invalid units
               if (!isPointInView(u.pos.x, u.pos.y, VIEWPORT_BUFFER)) return;
 
+              const isU = !!ent.isUnderground;
+
               // Use sprite for ALL non-attacking units (HUGE performance gain)
-              if (!ent.isAttacking) {
+              if (!ent.isAttacking && !isU) {
                 ctx.save();
                 ctx.translate(u.pos.x, u.pos.y);
                 ctx.rotate(ent.facingAngle + Math.PI / 2);
                 ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
                 ctx.restore();
               } else {
-                drawUnit(ctx, u.pos.x, u.pos.y, ent.color, false, ent.facingAngle, false, 0, opacity, u.type, empireId);
+                drawUnit(ctx, u.pos.x, u.pos.y, ent.color, false, ent.facingAngle, false, 0, opacity, u.type, empireId, undefined, isU);
               }
           });
           ctx.globalAlpha = 1.0;
 
           // Draw commander last to be on top
           if (head && head.pos && isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER)) {
+              const isU = !!ent.isUnderground;
               if (ent.id === myId && isSpectatorRef.current) {
-                  drawUnit(ctx, head.pos.x, head.pos.y, '#888888', true, ent.facingAngle, ent.isAttacking, ent.attackTimer, 0.4, head.type, initialEmpire.id, ent.equippedItem);
+                  drawUnit(ctx, head.pos.x, head.pos.y, '#888888', true, ent.facingAngle, ent.isAttacking, ent.attackTimer, 0.4, head.type, initialEmpire.id, ent.equippedItem, isU);
                   
                   ctx.fillStyle = '#ff0000';
                   ctx.font = 'bold 16px Arial';
                   ctx.textAlign = 'center';
                   ctx.fillText('DEAD', head.pos.x, head.pos.y - 65);
               } else {
-                  drawUnit(ctx, head.pos.x, head.pos.y, ent.color, true, ent.facingAngle, ent.isAttacking, ent.attackTimer, opacity, head.type, empireId, ent.equippedItem);
+                  drawUnit(ctx, head.pos.x, head.pos.y, ent.color, true, ent.facingAngle, ent.isAttacking, ent.attackTimer, opacity, head.type, empireId, ent.equippedItem, isU);
                   
                   // LAG DETECTION
                   if (ent.id !== myId && ent.lastUpdate && (Date.now() - ent.lastUpdate > 3000)) {
