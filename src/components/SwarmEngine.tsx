@@ -956,7 +956,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       rotation: ent.facingAngle,
       faction: ent.faction,
       empireId: ent.empireId,
-      unitCount: ent.units.length,
+      unitCount: Math.max(0, ent.units.length - 1),
       akce: ent.akce,
       hp: ent.units[0]?.hp || COMMANDER_MAX_HP,
       isAttacking: ent.isAttacking,
@@ -1537,17 +1537,18 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             const targetUnit = p.units[idx];
             if (targetUnit) {
-                const authoritativeUnitCount = typeof data.currentUnitCount === 'number'
-                  ? Math.max(1, Math.floor(data.currentUnitCount))
-                  : p.units.length;
+                const authoritativeSoldierCount = typeof data.currentUnitCount === 'number'
+                  ? Math.max(0, Math.floor(data.currentUnitCount))
+                  : Math.max(0, p.units.length - 1);
+                const authoritativeTotalUnits = Math.max(1, authoritativeSoldierCount + 1);
                 const authoritativeHp = typeof data.currentHp === 'number'
                   ? data.currentHp
                   : (p.units[0]?.hp || COMMANDER_MAX_HP);
 
-                while (p.units.length > authoritativeUnitCount) {
+                while (p.units.length > authoritativeTotalUnits) {
                   p.units.pop();
                 }
-                while (p.units.length < authoritativeUnitCount && p.units[0]) {
+                while (p.units.length < authoritativeTotalUnits && p.units[0]) {
                   p.units.push({
                     id: generateId('u'),
                     pos: { ...p.units[0].pos },
@@ -1561,7 +1562,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   p.units[0].hp = authoritativeHp;
                   createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
                 }
-                setScore(p.units.length);
+                p.lastKnownUnitCount = authoritativeSoldierCount;
+                setScore(Math.max(0, p.units.length - 1));
             }
           }
       }
@@ -1701,7 +1703,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       const player = playerRef.current;
       const currentUnits = player.units.length;
-      const desiredRemaining = Math.max(1, Math.floor(data.remainingUnitCount || currentUnits));
+      const desiredRemaining = Math.max(1, Math.floor((data.remainingUnitCount ?? Math.max(0, currentUnits - 1)) + 1));
       const splitCount = typeof data.splitCount === 'number'
         ? data.splitCount
         : Math.max(0, currentUnits - desiredRemaining);
@@ -1818,7 +1820,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           }
         }
 
-        ent.score = data.unitCount || 1;
+        const remoteSoldierCount = typeof data.unitCount === 'number' ? Math.max(0, Math.floor(data.unitCount)) : Math.max(0, ent.units.length - 1);
+        ent.score = remoteSoldierCount;
         ent.isDashing = data.isDashing;
         ent.isAttacking = data.isAttacking;
         ent.isUnderground = data.isUnderground ?? false; 
@@ -1834,20 +1837,22 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           }
           
           if (data.unitCount !== undefined) {
+            const desiredSoldierCount = Math.max(0, Math.floor(data.unitCount));
+            const desiredTotalCount = desiredSoldierCount + 1;
             const currentCount = ent.units.length;
             
-            if (data.unitCount > currentCount) {
+            if (desiredTotalCount > currentCount) {
               const timeSinceKill = Date.now() - (ent.lastDamageTime || 0);
               if (timeSinceKill > 2000) { 
-                  const diff = data.unitCount - currentCount;
+                  const diff = desiredTotalCount - currentCount;
                   for (let i = 0; i < diff; i++) {
                     ent.units.push({ id: generateId('u'), pos: { ...realPos }, color: ent.color, type: 'infantry', hp: 100 });
                   }
               }
-            } else if (data.unitCount < currentCount) {
-              ent.units = ent.units.slice(0, data.unitCount);
+            } else if (desiredTotalCount < currentCount) {
+              ent.units = ent.units.slice(0, desiredTotalCount);
             }
-            ent.lastKnownUnitCount = data.unitCount;
+            ent.lastKnownUnitCount = desiredSoldierCount;
           }
         }
         
@@ -2005,9 +2010,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           color: factionColor, 
           faction: factionColor,
           empireId: empireId,
-          score: data.unitCount || 1,
+          score: typeof data.unitCount === 'number' ? Math.max(0, Math.floor(data.unitCount)) : 0,
           akce: data.akce || 0,
-          lastKnownUnitCount: data.unitCount || 1, // Initialize sync count
+          lastKnownUnitCount: typeof data.unitCount === 'number' ? Math.max(0, Math.floor(data.unitCount)) : 0,
           isDashing: data.isDashing || false,
           velocity: { x: 0, y: 0 },
           facingAngle: realAngle,
@@ -2028,8 +2033,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
 
         // Fill initial units based on count
-        if (data.unitCount > 1) {
-          for (let i = 1; i < data.unitCount; i++) {
+        const initialSoldierCount = typeof data.unitCount === 'number' ? Math.max(0, Math.floor(data.unitCount)) : 0;
+        if (initialSoldierCount > 0) {
+          for (let i = 0; i < initialSoldierCount; i++) {
             newPlayer.units.push({ id: generateId('u'), pos: { ...realPos }, color: newPlayer.color, type: 'infantry', hp: 100 });
           }
         }
@@ -3205,7 +3211,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           y: playerRef.current.units[0].pos.y,
           rotation: playerRef.current.facingAngle,
           units: playerRef.current.units, // Full Squad Sync
-          unitCount: playerRef.current.units.length,
+          unitCount: Math.max(0, playerRef.current.units.length - 1),
           akce: playerRef.current.akce,
           faction: playerRef.current.faction,
           roomId: currentRoomRef.current.id,
@@ -4846,7 +4852,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         rotation: p.facingAngle, 
         faction: p.faction, 
         empireId: p.empireId, 
-        unitCount: p.units.length, 
+        unitCount: Math.max(0, p.units.length - 1), 
         akce: p.akce, 
         hp: p.units[0]?.hp || COMMANDER_MAX_HP, 
         isAttacking: p.isAttacking, 
@@ -6116,6 +6122,22 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
               ctx.fillText(ent.name, head.pos.x, head.pos.y - 50);
               ctx.shadowBlur = 0;
+          }
+
+          const visibleSoldierCount = ent.id === myId
+            ? Math.max(0, ent.units.length - 1)
+            : (typeof ent.lastKnownUnitCount === 'number' ? Math.max(0, ent.lastKnownUnitCount) : Math.max(0, ent.units.length - 1));
+          if (visibleSoldierCount === 0) {
+              const hpBarWidth = 42;
+              const hpBarHeight = 5;
+              const hpRatio = Math.max(0, Math.min(1, (head.hp || COMMANDER_MAX_HP) / COMMANDER_MAX_HP));
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+              ctx.fillRect(head.pos.x - hpBarWidth / 2, head.pos.y - 42, hpBarWidth, hpBarHeight);
+              ctx.fillStyle = '#ef4444';
+              ctx.fillRect(head.pos.x - hpBarWidth / 2, head.pos.y - 42, hpBarWidth * hpRatio, hpBarHeight);
+              ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(head.pos.x - hpBarWidth / 2, head.pos.y - 42, hpBarWidth, hpBarHeight);
           }
           
         if (ent.id === myId && ent.attackCooldown > 0) {
