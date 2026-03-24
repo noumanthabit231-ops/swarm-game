@@ -29,24 +29,30 @@ type SocketEventHandler = (data?: any) => void;
 type SocketAnyHandler = (eventName: string, data?: any) => void;
 
 const getTransportUrl = (input: string) => {
+  const isSecurePage = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  const preferredProtocol = isSecurePage ? 'wss:' : 'ws:';
+
   if (!input) {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}`;
+    return `${preferredProtocol}//${window.location.host}`;
   }
 
   try {
     const url = new URL(input);
-    if (url.protocol === 'http:') url.protocol = 'ws:';
-    if (url.protocol === 'https:') url.protocol = 'wss:';
+    if (url.protocol === 'http:' || url.protocol === 'ws:') {
+      url.protocol = preferredProtocol;
+    } else if (url.protocol === 'https:' || url.protocol === 'wss:') {
+      url.protocol = 'wss:';
+    }
     return url.toString();
   } catch {
-    if (input.startsWith('ws://') || input.startsWith('wss://')) return input;
-    if (input.startsWith('/')) {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${protocol}//${window.location.host}${input}`;
+    if (input.startsWith('ws://')) {
+      return isSecurePage ? `wss://${input.slice(5)}` : input;
     }
-    const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-    return `${protocol}${input.replace(/^\/+/, '')}`;
+    if (input.startsWith('wss://')) return input;
+    if (input.startsWith('/')) {
+      return `${preferredProtocol}//${window.location.host}${input}`;
+    }
+    return `${preferredProtocol}//${input.replace(/^\/+/, '')}`;
   }
 };
 
@@ -88,6 +94,7 @@ class UwsSocketClient {
   private ws: WebSocket | null = null;
   private readonly listeners = new Map<string, Set<SocketEventHandler>>();
   private readonly anyListeners = new Set<SocketAnyHandler>();
+  private readonly pendingMessages: (string | ArrayBuffer)[] = [];
   private manuallyClosed = false;
 
   constructor(url: string) {
@@ -121,15 +128,33 @@ class UwsSocketClient {
     this.dispatch(payload.type, payload.data);
   };
 
-  emit(eventName: string, data?: any) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-
-    if (eventName === 'sync_data') {
-      this.ws.send(createSyncPacket(data));
+  private sendOrQueue(payload: string | ArrayBuffer) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(payload);
       return;
     }
 
-    this.ws.send(JSON.stringify({ type: eventName, data }));
+    this.pendingMessages.push(payload);
+  }
+
+  private flushPendingMessages() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.pendingMessages.length === 0) return;
+
+    while (this.pendingMessages.length > 0) {
+      const payload = this.pendingMessages.shift();
+      if (payload !== undefined) {
+        this.ws.send(payload);
+      }
+    }
+  }
+
+  emit(eventName: string, data?: any) {
+    if (eventName === 'sync_data') {
+      this.sendOrQueue(createSyncPacket(data));
+      return;
+    }
+
+    this.sendOrQueue(JSON.stringify({ type: eventName, data }));
   }
 
   on(eventName: string, handler: SocketEventHandler) {
@@ -168,6 +193,7 @@ class UwsSocketClient {
 
     ws.onopen = () => {
       this.connected = true;
+      this.flushPendingMessages();
       this.dispatch('connect');
     };
 
