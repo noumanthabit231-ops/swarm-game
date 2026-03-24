@@ -378,6 +378,7 @@ interface TunnelEntrance {
   ownerId: string;
   color: string;
   connectedId?: string; // ID of the exit (if completed)
+  createdAt?: number;
 }
 interface Particle { pos: Vector; vel: Vector; life: number; maxLife: number; color: string; type?: 'dust' | 'slash' | 'tower_dust' | 'ripple' | 'text'; text?: string; }
 
@@ -668,11 +669,14 @@ interface Room {
   limit?: number;
   maxPlayers?: number;
   players: LobbyPlayer[];
-  status: 'Waiting' | 'In-Game';
-  isStarted: boolean;
-  rematchVotes: string[];
+  status: 'Waiting' | 'In-Game' | 'lobby' | 'active' | 'finished';
+  isStarted?: boolean;
+  rematchVotes: string[] | number;
   hostId: string;
   lastSeen?: number;
+  buildings?: any[];
+  tunnels?: any[];
+  seed?: number;
 }
 
 interface LobbyPlayer {
@@ -762,6 +766,146 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const [activeSplitGarrisonId, setActiveSplitGarrisonId] = useState<string | null>(null);
   const [isSpectator, setIsSpectator] = useState(false);
   const isSpectatorRef = useRef(false);
+
+  const buildTowerFromServerData = useCallback((data: any): Tower | null => {
+    const bId = String(data?.buildingId || data?.id || '');
+    if (!bId) return null;
+
+    let type: 'wall' | 'gate' | 'tower' | 'tunnel' = 'tower';
+    if (data.type === 'WALL' || data.type === 'wall') type = 'wall';
+    else if (data.type === 'GATE' || data.type === 'gate') type = 'gate';
+    else if (data.type === 'tunnel' || data.type === 'TUNNEL' || data.type === 'pit') type = 'tunnel';
+
+    const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : (type === 'tunnel' ? 999999 : TOWER_MAX_HP);
+    let bEmpireId = data.empireId;
+    if (!bEmpireId || bEmpireId === 'neutral') {
+      const owner = entitiesRef.current.find(e => String(e.id) === String(data.ownerId) || e.color === data.faction);
+      if (owner) bEmpireId = owner.empireId;
+    }
+
+    return {
+      id: bId,
+      ownerId: String(data.ownerId || data.faction || ''),
+      pos: {
+        x: Number(data.x ?? data.pos?.x ?? 0),
+        y: Number(data.y ?? data.pos?.y ?? 0)
+      },
+      color: data.faction || data.color || '#94a3b8',
+      hp: typeof data.hp === 'number' ? data.hp : maxHp,
+      maxHp,
+      lastShot: 0,
+      type,
+      empireId: bEmpireId || 'neutral',
+      rotation: typeof data.rotation === 'number' ? data.rotation : 0,
+      isOpen: !!data.isOpen
+    };
+  }, []);
+
+  const buildTunnelFromServerData = useCallback((data: any): TunnelEntrance | null => {
+    const tunnelId = String(data?.id || data?.buildingId || '');
+    if (!tunnelId) return null;
+
+    return {
+      id: tunnelId,
+      pos: {
+        x: Number(data.x ?? data.pos?.x ?? 0),
+        y: Number(data.y ?? data.pos?.y ?? 0)
+      },
+      ownerId: String(data.ownerId || ''),
+      color: data.faction || data.color || '#94a3b8',
+      connectedId: data.connectedId,
+      createdAt: typeof data.createdAt === 'number' ? data.createdAt : undefined
+    };
+  }, []);
+
+  const syncRoomStructures = useCallback((roomData?: Room | null) => {
+    const rawBuildings = Array.isArray(roomData?.buildings) ? roomData!.buildings : [];
+    const rawTunnels = Array.isArray(roomData?.tunnels) ? roomData!.tunnels : [];
+    const nextTunnels = rawTunnels
+      .map((tunnel) => buildTunnelFromServerData(tunnel))
+      .filter((tunnel): tunnel is TunnelEntrance => tunnel !== null);
+    const towerMap = new Map<string, Tower>();
+
+    rawBuildings.forEach((building) => {
+      const tower = buildTowerFromServerData(building);
+      if (tower) towerMap.set(String(tower.id), tower);
+    });
+
+    rawTunnels.forEach((tunnel) => {
+      const tower = buildTowerFromServerData({ ...tunnel, type: 'tunnel' });
+      if (tower) towerMap.set(String(tower.id), tower);
+    });
+
+    tunnelsRef.current = nextTunnels;
+    towersRef.current = Array.from(towerMap.values());
+  }, [buildTowerFromServerData, buildTunnelFromServerData]);
+
+  const syncMyImmediateState = useCallback((ent: Entity) => {
+    if (!socketRef.current || !currentRoomRef.current) return;
+
+    const myGarrisons = garrisonsRef.current
+      .filter((g) => g.ownerId === ent.id)
+      .map((g) => ({
+        id: g.id,
+        pos: g.pos,
+        mode: g.mode,
+        unitCount: g.units.length,
+        empireId: g.empireId,
+        color: g.color,
+        attackTimer: g.attackTimer
+      }));
+
+    socketRef.current.emit('sync_data', {
+      roomId: currentRoomRef.current.id,
+      x: ent.units[0]?.pos.x || 0,
+      y: ent.units[0]?.pos.y || 0,
+      rotation: ent.facingAngle,
+      faction: ent.faction,
+      empireId: ent.empireId,
+      unitCount: ent.units.length,
+      akce: ent.akce,
+      hp: ent.units[0]?.hp || 100,
+      isAttacking: ent.isAttacking,
+      isDashing: ent.isDashing,
+      isUnderground: ent.isUnderground,
+      equippedItem: ent.equippedItem,
+      name: nickname,
+      garrisons: myGarrisons
+    });
+  }, [nickname]);
+
+  const createSplitGarrison = useCallback((ent: Entity, splitCount: number, mode: 'HOLD' | 'HUNT' | 'RECALL') => {
+    const normalizedSplitCount = Math.min(Math.max(0, Math.floor(splitCount)), Math.max(0, ent.units.length - 1));
+    if (normalizedSplitCount <= 0) return null;
+
+    const splitUnits = ent.units.splice(ent.units.length - normalizedSplitCount, normalizedSplitCount);
+    if (splitUnits.length === 0) return null;
+
+    const newGarrison: Garrison = {
+      id: generateId('g'),
+      ownerId: ent.id,
+      units: splitUnits,
+      pos: { ...(splitUnits[0]?.pos || ent.units[0]?.pos || { x: 0, y: 0 }) },
+      color: ent.color,
+      empireId: ent.empireId,
+      mode,
+      attackTimer: 0,
+      attackCooldown: 0,
+      justSplit: true,
+      isLocal: ent.id === myId,
+      isUnderground: ent.isUnderground
+    };
+
+    garrisonsRef.current.push(newGarrison);
+
+    if (ent.id === myId) {
+      shakeRef.current = 10;
+      setPlayerGarrisons([...garrisonsRef.current.filter((g) => g.ownerId === myId)]);
+      syncMyImmediateState(ent);
+    }
+
+    return newGarrison.id;
+  }, [myId, syncMyImmediateState]);
   const [isDraggingCamera, setIsDraggingCamera] = useState(false);
   const [cameraZoom, setCameraZoom] = useState(1);
   const cameraZoomRef = useRef(1);
@@ -993,7 +1137,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Update info on server immediately
       socket.emit('update_player_name', { roomId: roomData.id, name: nickname, empireId: initialEmpire.id });
-      socket.emit('request_tunnels', { roomId: roomData.id }); // NEW: Get tunnels on join
       
       const players = roomData.players || [];
       setLobbyPlayers(players);
@@ -1005,6 +1148,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setGameState('LOBBY_WAITING');
       gameStateRef.current = 'LOBBY_WAITING';
       startLobbyArena(players);
+      syncRoomStructures(roomData);
       if (roomData.players) setLeaderboard(roomData.players.map((p: LobbyPlayer) => ({ name: p.name, score: 0 })));
     });
 
@@ -1225,6 +1369,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       const players = room.players || [];
       setLobbyPlayers(players);
       syncRemotePlayers(players);
+      syncRoomStructures(room);
       
       // Only set initial leaderboard in lobby mode. In game, the update loop handles it.
       if (ENGINE_STATE === 'LOBBY_WAITING' && room.players) {
@@ -1237,45 +1382,25 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         gameStateRef.current = 'LOBBY_WAITING';
         setIsMultiplayer(true);
         startLobbyArena(players);
+        syncRoomStructures(room);
         setIsJoiningRoom(false);
       } else if (ENGINE_STATE === 'LOBBY_WAITING') {
         startLobbyArena(players);
+        syncRoomStructures(room);
       }
     });
 
     socket.on('remote_building_placed', (data: any) => {
-      const bId = String(data.buildingId || data.id);
-      if (!bId) return;
-      if (towersRef.current.some(t => String(t.id) === bId)) return;
+      const nextTower = buildTowerFromServerData(data);
+      if (!nextTower) return;
 
-      // Detect type correctly (Wall, Gate, Tower or Tunnel)
-      let type: 'wall' | 'gate' | 'tower' | 'tunnel' = 'tower';
-      if (data.type === 'WALL' || data.type === 'wall') type = 'wall';
-      else if (data.type === 'GATE' || data.type === 'gate') type = 'gate';
-      else if (data.type === 'tunnel') type = 'tunnel';
-
-      const maxHp = (type === 'wall' || type === 'gate') ? WALL_MAX_HP : (type === 'tunnel' ? 999999 : TOWER_MAX_HP);
-
-      // Try to determine empireId from faction color if missing
-      let bEmpireId = data.empireId;
-      if (!bEmpireId || bEmpireId === 'neutral') {
-        const owner = entitiesRef.current.find(e => e.id === data.ownerId || e.color === data.faction);
-        if (owner) bEmpireId = owner.empireId;
+      const towerId = String(nextTower.id);
+      const existingIdx = towersRef.current.findIndex((tower) => String(tower.id) === towerId);
+      if (existingIdx !== -1) {
+        towersRef.current[existingIdx] = nextTower;
+      } else {
+        towersRef.current.push(nextTower);
       }
-
-      towersRef.current.push({
-        id: bId,
-        ownerId: data.ownerId || data.faction,
-        pos: { x: data.x, y: data.y },
-        color: data.faction,
-        hp: data.hp || maxHp,
-        maxHp: maxHp,
-        lastShot: 0,
-        type: type as any,
-        empireId: bEmpireId || 'neutral',
-        rotation: data.rotation || 0,
-        isOpen: !!data.isOpen
-      });
     });
 
     socket.on('garrison_destroyed', (data: { garrisonId: string, ownerId: string }) => {
@@ -1573,6 +1698,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       setVoteCount({ voted: 0, total: 0 }); 
       setHasVoted(false);
       setCurrentRoom(roomData); 
+      currentRoomRef.current = roomData;
       setIsSpectator(false);
       setCameraZoom(1);
       
@@ -1580,31 +1706,40 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       ENGINE_STATE = 'LOBBY_WAITING'; 
       gameStateRef.current = 'LOBBY_WAITING';
       startLobbyArena(roomData.players || []);
+      syncRoomStructures(roomData);
     });
 
     socket.on('remote_tunnel_update', (data: any) => {
-      console.log("RECEIVED REMOTE TUNNEL UPDATE:", data);
-      
-      // If we receive a tunnel from the server, we MUST ensure it's added.
-      // We will re-assign the entire array to trigger any necessary React state updates (though it's a ref, it's safer for the render loop).
-      const existingIdx = tunnelsRef.current.findIndex(t => t.id === data.id);
-      
+      const nextTunnel = buildTunnelFromServerData(data);
+      if (!nextTunnel) return;
+
+      const tunnelId = String(nextTunnel.id);
+      const existingIdx = tunnelsRef.current.findIndex((tunnel) => String(tunnel.id) === tunnelId);
       if (existingIdx !== -1) {
-        tunnelsRef.current[existingIdx] = data;
+        tunnelsRef.current[existingIdx] = nextTunnel;
       } else {
-        tunnelsRef.current.push(data);
+        tunnelsRef.current.push(nextTunnel);
+      }
+
+      const tunnelTower = buildTowerFromServerData({ ...data, type: 'tunnel' });
+      if (!tunnelTower) return;
+      const towerIdx = towersRef.current.findIndex((tower) => String(tower.id) === tunnelId);
+      if (towerIdx !== -1) {
+        towersRef.current[towerIdx] = tunnelTower;
+      } else {
+        towersRef.current.push(tunnelTower);
       }
     });
 
     socket.on('remote_tunnel_remove', (data: { id: string }) => {
-      console.log("RECEIVED REMOTE TUNNEL REMOVE:", data.id);
-      tunnelsRef.current = tunnelsRef.current.filter(t => t.id !== data.id);
+      const tunnelId = String(data.id);
+      tunnelsRef.current = tunnelsRef.current.filter((tunnel) => String(tunnel.id) !== tunnelId);
+      towersRef.current = towersRef.current.filter((tower) => String(tower.id) !== tunnelId);
     });
 
     socket.on('sync_tunnels', (data: { tunnels: TunnelEntrance[] }) => {
-      console.log("SYNC TUNNELS RECEIVED FROM SERVER:", data.tunnels);
       if (data.tunnels && Array.isArray(data.tunnels)) {
-        tunnelsRef.current = data.tunnels;
+        syncRoomStructures({ tunnels: data.tunnels, buildings: towersRef.current.filter((tower) => tower.type !== 'tunnel') } as Room);
       }
     });
 
@@ -1617,6 +1752,37 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       gameStateRef.current = 'GAME_ACTIVE';
       const gameSeed = data?.seed || 0.5;
       initGame(gameSeed, data.players);
+      syncRoomStructures(data as unknown as Room);
+    });
+
+    socket.on('split_result', (data: { success?: boolean, splitCount?: number, remainingUnitCount?: number, mode?: 'HOLD' | 'HUNT' | 'RECALL', strategy?: 'HALF' | 'SEPARATE_ALL' }) => {
+      if (!data?.success || !playerRef.current) return;
+
+      const player = playerRef.current;
+      const currentUnits = player.units.length;
+      const desiredRemaining = Math.max(1, Math.floor(data.remainingUnitCount || currentUnits));
+      const splitCount = typeof data.splitCount === 'number'
+        ? data.splitCount
+        : Math.max(0, currentUnits - desiredRemaining);
+
+      const createdId = createSplitGarrison(player, splitCount, data.mode || 'HOLD');
+      while (player.units.length > desiredRemaining) {
+        player.units.pop();
+      }
+      while (player.units.length < desiredRemaining && player.units[0]) {
+        player.units.push({
+          id: generateId('u'),
+          pos: { ...player.units[0].pos },
+          color: player.color,
+          type: 'infantry',
+          hp: 100
+        });
+      }
+
+      if (createdId && data.mode) {
+        const garrison = garrisonsRef.current.find((item) => item.id === createdId);
+        if (garrison) garrison.mode = data.mode;
+      }
     });
 
     socket.on('remote_update', (data: any) => {
@@ -1944,7 +2110,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socket.on('sync_world', (data: { neutrals: Unit[], towers: Tower[] }) => {
       if (!isHost) {
         neutralsRef.current = data.neutrals;
-        towersRef.current = data.towers;
       }
     });
 
@@ -1965,6 +2130,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       socket.off('room_update');
       socket.off('start_countdown');
       socket.off('match_started');
+      socket.off('split_result');
       socket.off('update_rematch_votes');
       socket.off('rematch_started');
       socket.off('remote_garrison_hit');
@@ -1993,8 +2159,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (socketRef.current && currentRoom) {
           socketRef.current.emit('host_sync_world', {
             roomId: currentRoom.id,
-            neutrals: neutralsRef.current,
-            towers: towersRef.current
+            neutrals: neutralsRef.current
           });
         }
       }, 1000); // World sync can be much slower (1Hz)
@@ -2138,7 +2303,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   }, [myId]);
 
   const splitSwarm = useCallback((ent: Entity, forceExecute: boolean = false) => {
-    // Requires roughly 3 rows of units to split (set to 15 per user request)
     if (ent.units.length < 15) {
       if (ent.id === myId) {
         showError(t.notEnoughUnitsForSplit);
@@ -2146,132 +2310,68 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       return;
     }
     
-    // If not forced (like from the C key), open the panel
     if (ent.id === myId && !activeSplitGarrisonId && !forceExecute) {
       setActiveSplitGarrisonId('pending_split');
       return;
     }
-    
-    // Calculate split count (40% of army)
-    const splitCount = Math.floor(ent.units.length * 0.4);
-    if (splitCount === 0) return null;
-    
-    // Perform the actual split
-    const splitUnits = ent.units.splice(ent.units.length - splitCount, splitCount);
-    
+
     let autoHunt = false;
-    entitiesRef.current.forEach(e => {
-        if (e.id !== ent.id && e.units.length > 0 && getDistance(ent.units[0].pos, e.units[0].pos) < 300) {
-            autoHunt = true;
-        }
+    entitiesRef.current.forEach((entity) => {
+      if (entity.id !== ent.id && entity.units.length > 0 && getDistance(ent.units[0].pos, entity.units[0].pos) < 300) {
+        autoHunt = true;
+      }
     });
 
-    const newGarrison: Garrison = {
-      id: generateId('g'),
-      ownerId: ent.id,
-      units: splitUnits,
-      pos: { ...splitUnits[0].pos },
-      color: ent.color,
-      empireId: ent.empireId,
-      mode: autoHunt ? 'HUNT' : 'HOLD',
-      attackTimer: 0,
-      attackCooldown: 0,
-      justSplit: true,
-      isLocal: ent.id === myId,
-      isUnderground: ent.isUnderground // Inherit layer
-    };
-    garrisonsRef.current.push(newGarrison);
+    const targetMode = autoHunt ? 'HUNT' : 'HOLD';
 
-    if (ent.id === myId) {
-      shakeRef.current = 10;
-      setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
-      
-      // Fast sync trigger for the new split
-      if (socketRef.current && currentRoomRef.current) {
-          const myGarrisons = garrisonsRef.current
-            .filter(g => g.ownerId === myId)
-            .map(g => ({
-              id: g.id,
-              pos: g.pos,
-              mode: g.mode,
-              unitCount: g.units.length,
-              empireId: g.empireId,
-              color: g.color,
-              attackTimer: g.attackTimer
-            }));
-
-          socketRef.current.emit('sync_data', {
-            roomId: currentRoomRef.current.id,
-            garrisons: myGarrisons,
-            unitCount: ent.units.length,
-            isSplit: true
-          });
-      }
-      return newGarrison.id;
+    if (ent.id === myId && isMultiplayer && currentRoomRef.current && socketRef.current) {
+      socketRef.current.emit('request_split', {
+        roomId: currentRoomRef.current.id,
+        mode: targetMode,
+        strategy: 'HALF'
+      });
+      return null;
     }
-    return null;
-  }, [myId, activeSplitGarrisonId]);
+
+    return createSplitGarrison(ent, Math.floor(ent.units.length / 2), targetMode);
+  }, [myId, activeSplitGarrisonId, isMultiplayer, createSplitGarrison, t.notEnoughUnitsForSplit]);
 
   const executeSplit = useCallback((mode: 'HOLD' | 'HUNT' | 'RECALL' | 'SEPARATE_ALL') => {
     if (!playerRef.current) return;
     const p = playerRef.current;
     
     if (mode === 'SEPARATE_ALL') {
-        if (p.units.length <= 1) {
-            setActiveSplitGarrisonId(null);
-            return;
-        }
-        
-        // Take ALL units except commander
-        const separatedUnits = p.units.splice(1);
-        
-        const newGarrison: Garrison = {
-            id: generateId('g'),
-            ownerId: myId,
-            units: separatedUnits,
-            pos: { ...p.units[0].pos },
-            color: p.color,
-            empireId: p.empireId,
-            mode: 'HUNT',
-            attackTimer: 0,
-            attackCooldown: 0,
-            justSplit: true,
-            isLocal: true,
-            isUnderground: p.isUnderground // Inherit layer
-        };
-        garrisonsRef.current.push(newGarrison);
-        setPlayerGarrisons([...garrisonsRef.current.filter(g => g.ownerId === myId)]);
-        
-        // Sync
-        if (socketRef.current && currentRoomRef.current) {
-            const myGarrisons = garrisonsRef.current
-                .filter(g => g.ownerId === myId)
-                .map(g => ({
-                    id: g.id,
-                    pos: g.pos,
-                    mode: g.mode,
-                    unitCount: g.units.length,
-                    empireId: g.empireId,
-                    color: g.color,
-                    attackTimer: g.attackTimer
-                }));
+      if (p.units.length <= 1) {
+        setActiveSplitGarrisonId(null);
+        return;
+      }
 
-            socketRef.current.emit('sync_data', {
-                roomId: currentRoomRef.current.id,
-                garrisons: myGarrisons,
-                unitCount: p.units.length,
-                isSplit: true
-            });
-        }
+      if (isMultiplayer && currentRoomRef.current && socketRef.current) {
+        socketRef.current.emit('request_split', {
+          roomId: currentRoomRef.current.id,
+          mode: 'HUNT',
+          strategy: 'SEPARATE_ALL'
+        });
+      } else {
+        createSplitGarrison(p, p.units.length - 1, 'HUNT');
+      }
     } else {
-        const gid = splitSwarm(p, true);
+      if (isMultiplayer && currentRoomRef.current && socketRef.current) {
+        socketRef.current.emit('request_split', {
+          roomId: currentRoomRef.current.id,
+          mode,
+          strategy: 'HALF'
+        });
+      } else {
+        const gid = createSplitGarrison(p, Math.floor(p.units.length / 2), mode);
         if (gid) {
-            const g = garrisonsRef.current.find(g => g.id === gid);
-            if (g) g.mode = mode;
+          const garrison = garrisonsRef.current.find((g) => g.id === gid);
+          if (garrison) garrison.mode = mode;
         }
+      }
     }
     setActiveSplitGarrisonId(null);
-   }, [myId, splitSwarm]);
+   }, [isMultiplayer, createSplitGarrison]);
  
    const dismissUnits = useCallback((ent: Entity, count: number | 'ALL') => {
      if (ent.units.length <= 1) return; // Cannot dismiss the Commander
@@ -2442,24 +2542,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               hp: 999999
             };
             
-            // OPTIMISTIC UPDATE: Add to towersRef (the common building array)
-            towersRef.current.push({
-                id: newTunnelObj.id,
-                ownerId: p.id,
-                pos: { x: newTunnelObj.x, y: newTunnelObj.y },
-                color: p.color,
-                hp: 999999,
-                maxHp: 999999,
-                lastShot: 0,
-                type: 'tunnel' as any,
-                empireId: p.empireId,
-                rotation: 0,
-                isOpen: false
-            });
-            
             if (socketRef.current) {
               const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
-              console.log("EMITTING TUNNEL TO SERVER:", currentRoomId, newTunnelObj);
               socketRef.current.emit('building_placed', { roomId: currentRoomId, ...newTunnelObj });
             }
           }
@@ -2779,7 +2863,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       };
       
       if (bType !== 'tower') lastWallPosRef.current = { x: finalX, y: finalY };
-      towersRef.current.push(newBuilding);
       towersBuiltRef.current++;
       shakeRef.current = bType === 'tower' ? 15 : 5;
 
@@ -2942,9 +3025,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             roomId: currentRoomRef.current?.id, 
             buildingId: b.id 
           });
-          
-          // Remove from local list immediately
-          towersRef.current.splice(clickedBuildingIdx, 1);
           return;
         }
       }
@@ -3458,11 +3538,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const isOwner = foundTunnel && (foundTunnel.ownerId === myId || foundTunnel.ownerId === playerRef.current?.id);
             if (foundTunnel && isOwner && isRPressedLocal) {
                 const tid = foundTunnel.id;
-                towersRef.current = towersRef.current.filter(b => b.id !== tid);
-                
                 if (socketRef.current) {
                     const currentRoomId = currentRoomRef.current?.id || (window as any).currentRoomId || '';
-                    console.log("EMITTING TUNNEL DESTROY:", tid);
                     socketRef.current.emit('building_destroyed', { roomId: currentRoomId, buildingId: tid });
                 }
                 if (keysRef.current['r']) keysRef.current['r'] = false;
