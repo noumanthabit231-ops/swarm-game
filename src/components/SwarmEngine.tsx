@@ -1622,7 +1622,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socket.on('remote_update', (data: any) => {
       if (!data || !data.id) return;
       
-      const pid = data.id;
+      console.log("ENEMY_POS:", data.id, data.x, data.y);
+
+      const pid = String(data.id);
       const isItMe = pid === socket.id || pid === myId;
 
       if (isItMe) return;
@@ -1874,25 +1876,25 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         }
       } else {
         // Only re-create if the player is still in the room
-        if (recentlyDestroyedPlayers.current.has(data.id)) return; // CRITICAL: Prevent Player resurrection
+        if (recentlyDestroyedPlayers.current.has(pid)) return; // CRITICAL: Prevent Player resurrection
 
-        const isInRoom = lobbyPlayersRef.current.some(p => p.id === data.id);
+        const isInRoom = lobbyPlayersRef.current.some(p => String(p.id) === pid);
         if (!isInRoom) {
           // If they aren't in the room list, they should NOT be in entitiesRef or remotePlayersRef either
-          if (remotePlayersRef.current.has(data.id)) {
-            remotePlayersRef.current.delete(data.id);
-            entitiesRef.current = entitiesRef.current.filter(e => e.id !== data.id);
+          if (remotePlayersRef.current.has(pid)) {
+            remotePlayersRef.current.delete(pid);
+            entitiesRef.current = entitiesRef.current.filter(e => e.id !== pid);
           }
           return;
         }
 
-        const cached = playerSkinsRef.current.get(data.id);
+        const cached = playerSkinsRef.current.get(pid);
         const factionColor = data.faction || cached?.faction || '#94a3b8';
         const empireId = data.empireId || cached?.empireId || 'neutral';
 
         const newPlayer: Entity = {
-          id: data.id,
-          name: data.name || `Commander #${data.id.slice(0, 3)}`,
+          id: pid,
+          name: data.name || `Commander #${pid.slice(0, 3)}`,
           type: 'player',
           units: [{ id: generateId('c'), pos: { ...realPos }, color: factionColor, type: 'infantry', hp: data.hp || 100 }],
           color: factionColor, 
@@ -1917,7 +1919,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         
         // Save to cache for future use
         if (empireId !== 'neutral') {
-          playerSkinsRef.current.set(data.id, { empireId: empireId as EmpireType, faction: factionColor });
+          playerSkinsRef.current.set(pid, { empireId: empireId as EmpireType, faction: factionColor });
         }
 
         // Fill initial units based on count
@@ -1926,7 +1928,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             newPlayer.units.push({ id: generateId('u'), pos: { ...realPos }, color: newPlayer.color, type: 'infantry', hp: 100 });
           }
         }
-        remotePlayersRef.current.set(data.id, newPlayer);
+        remotePlayersRef.current.set(pid, newPlayer);
         entitiesRef.current.push(newPlayer);
       }
     });
@@ -6125,9 +6127,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
           // NEW: Layer Isolation - Only see units in the same layer
           const p = playerRef.current;
-          if (!isSpectatorRef.current && ent.isUnderground !== p?.isUnderground) {
-            return; // Invisible across layers
-          }
 
           // Fog of War: Hide underground enemy units unless we are also underground
           const sid = socketRef.current?.id || myId;
