@@ -1397,9 +1397,11 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           return;
       }
 
-      // NEW: Underground units take no damage from surface attacks
+      // RULE OF EQUAL LAYERS (v2.9.6)
+      // Damage is only applied if attacker and victim are on the same level.
+      // Server already validates this, but client syncs for smoothness.
       const p = playerRef.current;
-      if (p && p.isUnderground && !data.isUndergroundAttack) return;
+      if (p && p.isUnderground !== data.isUndergroundAttack) return;
 
       if (data.garrisonId) {
           const g = garrisonsRef.current.find(g => g.id === data.garrisonId);
@@ -3979,14 +3981,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 let targetObj = isTargetGarrison ? garrisonMap.get(n.entityId.substring(2)) : entityMap.get(n.entityId);
                 if (!targetObj) continue;
 
-                // NEW: Layer Isolation for Combat (v2.9.4)
-                // Both attacker and target must be on the same layer (Surface OR Underground)
+                // --- Rule of Equal Layers (v2.9.6) ---
+                // Damage is allowed if BOTH are on the same layer.
                 if (e1.isUnderground !== targetObj.isUnderground) continue;
 
                 // FIXED: Only explicit attack triggers damage for players. AI still has auto-attack.
                 const isAI = e1.type === 'ai';
                 // REWRITE: Underground units CAN attack each other (Underground War)
-                const isActive = e1.isAttacking && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
+                const isActive = (e1.isAttacking || e1.isUnderground) && e1.attackTimer > 0 && (e1.swingKills || 0) < 5;
                 const isAuto = isAI && !e1.isAttacking && (d < 30 && Math.random() < 0.01);
 
                 if (isActive || isAuto) {
