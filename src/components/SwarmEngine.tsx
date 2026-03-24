@@ -1748,7 +1748,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
         if (typeof data.x === 'number' && typeof data.y === 'number') {
           const serverPos = { x: data.x, y: data.y };
-          if (getDistance(localHead.pos, serverPos) > 200) {
+          if (getDistance(localHead.pos, serverPos) > 50) {
             localHead.pos = serverPos;
             localPlayer.targetPos = serverPos;
             localPlayer.lastPos = serverPos;
@@ -1810,7 +1810,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           const shouldSnapToRemotePos =
             !ent.lastUpdate ||
             !ent.targetPos ||
-            getDistance(head.pos, realPos) > 500;
+            getDistance(head.pos, realPos) > 900;
 
           if (shouldSnapToRemotePos) {
             head.pos = { ...realPos };
@@ -3902,7 +3902,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             for (let i = neighbors.length - 1; i >= 0; i--) {
               const neighbor = neighbors[i];
               if (neighbor.entityId !== 'neutral') continue;
-              if (getDistance(head.pos, neighbor.unit.pos) < 70) {
+              if (getDistance(head.pos, neighbor.unit.pos) < 140) {
                 ent.units.push({ ...neighbor.unit, color: ent.color, empireId: ent.empireId });
                 neutralsRef.current = neutralsRef.current.filter(nu => nu.id !== neighbor.unit.id);
                 neighbors.splice(i, 1);
