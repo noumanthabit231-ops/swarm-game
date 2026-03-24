@@ -767,6 +767,99 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const [isSpectator, setIsSpectator] = useState(false);
   const isSpectatorRef = useRef(false);
 
+  const [isDraggingCamera, setIsDraggingCamera] = useState(false);
+  const [cameraZoom, setCameraZoom] = useState(1);
+  const cameraZoomRef = useRef(1);
+  const [serverCapacity, setServerCapacity] = useState({ active: 0, max: 1000 });
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  const isLeavingRef = useRef(false);
+
+  // Spatial Hash Grid for performance optimization
+  const GRID_CELL_SIZE = 100;
+  const spatialGridRef = useRef<Map<number, { unit: Unit, entityId: string }[]>>(new Map());
+  const gridKey = (gx: number, gy: number) => (gx << 16) | (gy & 0xFFFF);
+
+  // Sprite Cache for units to avoid complex path drawing every frame
+  const unitSpriteCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+
+  // Function to get or create a cached unit sprite
+  const getUnitSprite = (empireId: EmpireType | 'neutral', isCommander: boolean, color: string, type: UnitType = 'infantry') => {
+    const key = `${empireId}_${isCommander}_${color}_${type}`;
+    if (unitSpriteCacheRef.current.has(key)) return unitSpriteCacheRef.current.get(key)!;
+
+    // Increased canvas size (160 for units, 240 for commanders) 
+    // to accommodate long weapons like spears and yatagans.
+    const size = isCommander ? 240 : 160;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return canvas;
+
+    // Draw the unit centered in the cache canvas
+    // Using a fixed time/bob for the cached version
+    drawUnit(ctx, size / 2, size / 2, color, isCommander, -Math.PI / 2, false, 0, 1.0, type, empireId);
+
+    unitSpriteCacheRef.current.set(key, canvas);
+    return canvas;
+  };
+
+  useEffect(() => {
+    isSpectatorRef.current = isSpectator;
+  }, [isSpectator]);
+
+  useEffect(() => {
+    cameraZoomRef.current = cameraZoom;
+  }, [cameraZoom]);
+
+
+
+  // Networking State
+  const socketRef = useRef<UwsSocketClient | null>(null);
+  const lastSyncTimeRef = useRef<number>(0);
+  const lastUIUpdateTimeRef = useRef<number>(0); // NEW: Throttle React state updates
+  const [isHost, setIsHost] = useState(false);
+  const isHostRef = useRef(false); // NEW: Reliable host ref
+  const [myId, setMyId] = useState('');
+  const myIdRef = useRef(''); // Ref for myId to avoid closure issues
+  useEffect(() => { myIdRef.current = myId; }, [myId]); // Sync ref
+  const [isMultiplayer, setIsMultiplayer] = useState(false);
+  const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
+  const currentRoomRef = useRef<Room | null>(null);
+  const [roomForm, setRoomForm] = useState({ name: '', password: '', limit: 5 });
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const [passwordModalRoom, setPasswordModalRoom] = useState<Room | null>(null);
+  const [passwordInput, setPasswordInput] = useState('');
+  
+  // Guard Timer for Loading/Joining states
+  useEffect(() => {
+    if (isJoiningRoom) {
+      const timer = setTimeout(() => {
+        if (isJoiningRoom) {
+          console.warn("[STABILITY] Join handshake timed out. Resetting...");
+          setIsJoiningRoom(false);
+          setGameState('MENU');
+          ENGINE_STATE = 'MENU';
+        }
+      }, 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [isJoiningRoom]);
+  const [discoveredRooms, setDiscoveredRooms] = useState<Room[]>([]);
+  const [lobbyPlayers, setLobbyPlayers] = useState<LobbyPlayer[]>([]);
+  const lobbyPlayersRef = useRef<LobbyPlayer[]>([]);
+  const remotePlayersRef = useRef<Map<string, Entity>>(new Map());
+  const playerSkinsRef = useRef<Map<string, { empireId: EmpireType, faction: string, name?: string }>>(new Map());
+  const [voteCount, setVoteCount] = useState({ voted: 0, total: 0 });
+  const [hasVoted, setHasVoted] = useState(false);
+  
+  useEffect(() => { currentRoomRef.current = currentRoom; }, [currentRoom]);
+  useEffect(() => { lobbyPlayersRef.current = lobbyPlayers; }, [lobbyPlayers]);
+  const [networkStatus, setNetworkStatus] = useState<'Connecting...' | 'Ready' | 'Error'>('Connecting...');
+  const [socketConnected, setSocketConnected] = useState<boolean>(true);
+  const [lastEvent, setLastEvent] = useState<string>('Initializing...');
+
   const buildTowerFromServerData = useCallback((data: any): Tower | null => {
     const bId = String(data?.buildingId || data?.id || '');
     if (!bId) return null;
@@ -906,98 +999,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     return newGarrison.id;
   }, [myId, syncMyImmediateState]);
-  const [isDraggingCamera, setIsDraggingCamera] = useState(false);
-  const [cameraZoom, setCameraZoom] = useState(1);
-  const cameraZoomRef = useRef(1);
-  const [serverCapacity, setServerCapacity] = useState({ active: 0, max: 1000 });
-  const [queuePosition, setQueuePosition] = useState<number | null>(null);
-  const isLeavingRef = useRef(false);
-
-  // Spatial Hash Grid for performance optimization
-  const GRID_CELL_SIZE = 100;
-  const spatialGridRef = useRef<Map<number, { unit: Unit, entityId: string }[]>>(new Map());
-  const gridKey = (gx: number, gy: number) => (gx << 16) | (gy & 0xFFFF);
-
-  // Sprite Cache for units to avoid complex path drawing every frame
-  const unitSpriteCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
-
-  // Function to get or create a cached unit sprite
-  const getUnitSprite = (empireId: EmpireType | 'neutral', isCommander: boolean, color: string, type: UnitType = 'infantry') => {
-    const key = `${empireId}_${isCommander}_${color}_${type}`;
-    if (unitSpriteCacheRef.current.has(key)) return unitSpriteCacheRef.current.get(key)!;
-
-    // Increased canvas size (160 for units, 240 for commanders) 
-    // to accommodate long weapons like spears and yatagans.
-    const size = isCommander ? 240 : 160;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return canvas;
-
-    // Draw the unit centered in the cache canvas
-    // Using a fixed time/bob for the cached version
-    drawUnit(ctx, size / 2, size / 2, color, isCommander, -Math.PI / 2, false, 0, 1.0, type, empireId);
-
-    unitSpriteCacheRef.current.set(key, canvas);
-    return canvas;
-  };
-
-  useEffect(() => {
-    isSpectatorRef.current = isSpectator;
-  }, [isSpectator]);
-
-  useEffect(() => {
-    cameraZoomRef.current = cameraZoom;
-  }, [cameraZoom]);
-
-
-
-  // Networking State
-  const socketRef = useRef<UwsSocketClient | null>(null);
-  const lastSyncTimeRef = useRef<number>(0);
-  const lastUIUpdateTimeRef = useRef<number>(0); // NEW: Throttle React state updates
-  const [isHost, setIsHost] = useState(false);
-  const isHostRef = useRef(false); // NEW: Reliable host ref
-  const [myId, setMyId] = useState('');
-  const myIdRef = useRef(''); // Ref for myId to avoid closure issues
-  useEffect(() => { myIdRef.current = myId; }, [myId]); // Sync ref
-  const [isMultiplayer, setIsMultiplayer] = useState(false);
-  const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
-  const currentRoomRef = useRef<Room | null>(null);
-  const [roomForm, setRoomForm] = useState({ name: '', password: '', limit: 5 });
-  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
-  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
-  const [passwordModalRoom, setPasswordModalRoom] = useState<Room | null>(null);
-  const [passwordInput, setPasswordInput] = useState('');
-  
-  // Guard Timer for Loading/Joining states
-  useEffect(() => {
-    if (isJoiningRoom) {
-      const timer = setTimeout(() => {
-        if (isJoiningRoom) {
-          console.warn("[STABILITY] Join handshake timed out. Resetting...");
-          setIsJoiningRoom(false);
-          setGameState('MENU');
-          ENGINE_STATE = 'MENU';
-        }
-      }, 8000);
-      return () => clearTimeout(timer);
-    }
-  }, [isJoiningRoom]);
-  const [discoveredRooms, setDiscoveredRooms] = useState<Room[]>([]);
-  const [lobbyPlayers, setLobbyPlayers] = useState<LobbyPlayer[]>([]);
-  const lobbyPlayersRef = useRef<LobbyPlayer[]>([]);
-  const remotePlayersRef = useRef<Map<string, Entity>>(new Map());
-  const playerSkinsRef = useRef<Map<string, { empireId: EmpireType, faction: string, name?: string }>>(new Map());
-  const [voteCount, setVoteCount] = useState({ voted: 0, total: 0 });
-  const [hasVoted, setHasVoted] = useState(false);
-  
-  useEffect(() => { currentRoomRef.current = currentRoom; }, [currentRoom]);
-  useEffect(() => { lobbyPlayersRef.current = lobbyPlayers; }, [lobbyPlayers]);
-  const [networkStatus, setNetworkStatus] = useState<'Connecting...' | 'Ready' | 'Error'>('Connecting...');
-  const [socketConnected, setSocketConnected] = useState<boolean>(true);
-  const [lastEvent, setLastEvent] = useState<string>('Initializing...');
 
   const getKillerName = (id: string | null): string => {
     if (!id) return 'Enemy';
