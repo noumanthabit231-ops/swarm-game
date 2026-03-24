@@ -960,7 +960,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       hp: ent.units[0]?.hp || 100,
       isAttacking: ent.isAttacking,
       isDashing: ent.isDashing,
-      isUnderground: ent.isUnderground,
+      isUnderground: ent.isUnderground ?? false,
       equippedItem: ent.equippedItem,
       name: nickname,
       garrisons: myGarrisons
@@ -1060,7 +1060,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           attackTimer: 0,
           attackCooldown: 0,
           weightSlowdown: 0,
-          splitCooldown: 0
+          splitCooldown: 0,
+          isUnderground: false
         };
         remotePlayersRef.current.set(p.id, newEnt);
         entitiesRef.current.push(newEnt);
@@ -1881,7 +1882,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ent.score = data.unitCount || 1;
         ent.isDashing = data.isDashing;
         ent.isAttacking = data.isAttacking;
-        ent.isUnderground = data.isUnderground; 
+        ent.isUnderground = data.isUnderground ?? false; 
         if (data.equippedItem) ent.equippedItem = data.equippedItem; // NEW
         
         if (ent.units.length > 0) {
@@ -1920,7 +1921,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               existing.mode = rg.mode;
               existing.targetPos = rg.targetPos; 
               existing.attackTimer = rg.attackTimer || 0;
-              existing.isUnderground = rg.isUnderground; // NEW: Sync layer
+              existing.isUnderground = rg.isUnderground ?? false; // NEW: Sync layer
               
               const currentGCount = existing.units.length;
               if (existing.lastKnownUnitCount === undefined) existing.lastKnownUnitCount = currentGCount;
@@ -1975,7 +1976,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 targetPos: rg.targetPos || rg.pos,
                 justSplit: false,
                 isLocal: false,
-                isUnderground: rg.isUnderground // NEW: Sync layer
+                isUnderground: rg.isUnderground ?? false // NEW: Sync layer
               };
               garrisonsRef.current.push(newGarrison);
             }
@@ -3086,6 +3087,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         existing.score = 1;
         existing.akce = 0;
         existing.color = factionColor;
+        existing.isUnderground = false;
         existing.empireId = isMe ? initialEmpire.id : (p.empireId || cached?.empireId || existing.empireId || 'neutral'); 
         return existing;
       }
@@ -3115,7 +3117,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         attackTimer: 0,
         attackCooldown: 0,
         weightSlowdown: 0,
-        splitCooldown: 0
+        splitCooldown: 0,
+        isUnderground: false
       };
     });
 
@@ -3185,6 +3188,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (existing.units[0]) {
           existing.units[0].pos = { ...sPos };
         }
+        existing.isUnderground = false;
         return existing;
       }
       return {
@@ -3202,7 +3206,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         attackTimer: 0,
         attackCooldown: 0,
         weightSlowdown: 0,
-        splitCooldown: 0
+        splitCooldown: 0,
+        isUnderground: false
       };
     });
     
@@ -3263,7 +3268,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           unitCount: playerRef.current.units.length,
           akce: playerRef.current.akce,
           faction: playerRef.current.faction,
-          roomId: currentRoomRef.current.id
+          roomId: currentRoomRef.current.id,
+          isUnderground: false
         });
       }
     }
@@ -5009,7 +5015,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         hp: p.units[0]?.hp || 100, 
         isAttacking: p.isAttacking, 
         isDashing: p.isDashing, 
-        isUnderground: p.isUnderground, 
+        isUnderground: p.isUnderground ?? false, 
         equippedItem: p.equippedItem, // NEW: Sync equipped item
         name: nickname, 
         recruitedIds: Array.from(pendingRecruitsRef.current), 
@@ -6203,7 +6209,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
           // NEW: Layer Isolation - Only see units in the same layer
           const p = playerRef.current;
-          if (!isSpectatorRef.current && ent.isUnderground !== p?.isUnderground) {
+          if (!isSpectatorRef.current && ent.isUnderground === true && !p?.isUnderground) {
             return; // Invisible across layers
           }
 
