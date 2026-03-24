@@ -1621,8 +1621,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     socket.on('remote_update', (data: any) => {
       if (!data || !data.id) return;
-      
-      console.log("ENEMY_POS:", data.id, data.x, data.y);
 
       const pid = String(data.id);
       const isItMe = pid === socket.id || pid === myId;
@@ -6127,6 +6125,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
           // NEW: Layer Isolation - Only see units in the same layer
           const p = playerRef.current;
+          if (!isSpectatorRef.current && ent.isUnderground !== p?.isUnderground) {
+            return; // Invisible across layers
+          }
 
           // Fog of War: Hide underground enemy units unless we are also underground
           const sid = socketRef.current?.id || myId;
