@@ -15,7 +15,7 @@ const waitingQueue = [];
 // Хранилище комнат и игроков через Map() для мгновенного поиска
 const rooms = new Map(); 
 
-// Вспомогательная функция для распаковки бинарных данных (24 байта)
+// Вспомогательная функция для распаковки бинарных данных (25 байт)
 function unpackSyncData(message) {
   // message в uWS — это ArrayBuffer
   const view = new DataView(message);
@@ -25,7 +25,8 @@ function unpackSyncData(message) {
     y: view.getFloat32(8, true),
     rotation: view.getFloat32(12, true),
     hp: view.getFloat32(16, true),
-    unitCount: view.getUint32(20, true)
+    unitCount: view.getUint32(20, true),
+    isUnderground: view.getUint8(24) === 1 // БИТ ПОДЗЕМЕЛЬЯ
   };
 }
 
@@ -167,6 +168,7 @@ const server = uWS.App().ws('/*', {
             p.y = syncData.y;
             p.hp = syncData.hp;
             p.unitCount = syncData.unitCount;
+            p.isUnderground = syncData.isUnderground; // ОБНОВЛЯЕМ СОСТОЯНИЕ В ПАМЯТИ
 
             // SERVER AUTHORITY: Смерть при достижении 0 юнитов
             if (p.unitCount === 0 && p.isAlive !== false && room.status === 'active') {
@@ -288,6 +290,11 @@ const server = uWS.App().ws('/*', {
               }
 
               if (sourcePos && victim) {
+                // ПОДЗЕМЕЛЬЕ: Игнорируем урон, если цель под землей
+                if (victim.isUnderground) {
+                  return console.log(`[COMBAT ARBITER] Hit blocked: victim ${victim.id} is underground`);
+                }
+
                 const dist = Math.sqrt((sourcePos.x - victim.x)**2 + (sourcePos.y - victim.y)**2);
                 if (dist > maxDist) return console.log(`[COMBAT ARBITER] Hit blocked: distance ${Math.floor(dist)} > ${maxDist}`);
                 
@@ -463,7 +470,8 @@ function joinRoomInternal(ws, roomId, defaultName, isHost) {
     shortId: ws.shortId,
     name: defaultName, isHost: isHost, 
     x: 600, y: 600, faction: isHost ? 'green' : 'blue', 
-    votedForRematch: false, hp: 100, isAlive: true 
+    votedForRematch: false, hp: 100, isAlive: true,
+    isUnderground: false // ИНИЦИАЛИЗАЦИЯ
   }; 
   room.players.push(player); 
   

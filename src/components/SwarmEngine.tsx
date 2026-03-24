@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Joystick from './Joystick';
 import { Crown, Shield, Sword, Check, ArrowLeft, Users, Zap,
-  WifiOff,
-  RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
+  WifiOff, RefreshCw, Loader2, Trophy, LogOut } from 'lucide-react';
 import { cn } from '../utils/cn';
 
 import { EmpireType } from './SelectionScreen';
@@ -209,12 +208,14 @@ class SocketProxy {
         const rotation = view.getFloat32(12, true);
         const hp = view.getFloat32(16, true);
         const unitCount = view.getUint32(20, true);
+        const isUnderground = view.getUint8(24) === 1; // SYNC UNDERGROUND STATE
 
         const enemy = this.entitiesRef.current.find(e => e.shortId === shortId);
         if (enemy && enemy.id !== this.id) {
           enemy.targetPos = { x, y };
           enemy.targetAngle = rotation;
           enemy.lastUpdate = Date.now();
+          enemy.isUnderground = isUnderground; // SYNC STATE
           if (enemy.units.length > 0) enemy.units[0].hp = hp;
           
           // TOTAL BINARY SYNC: FORCE unitCount and isAlive
@@ -280,7 +281,7 @@ class SocketProxy {
   emit(type: string, data: any) {
     if (this.ws.readyState === WebSocket.OPEN) {
       if (type === 'sync_data' && data.x !== undefined && data.y !== undefined) {
-        const buffer = new ArrayBuffer(24);
+        const buffer = new ArrayBuffer(25);
         const view = new DataView(buffer);
         view.setUint32(0, this.myShortIdRef.current || 0, true);
         view.setFloat32(4, data.x, true);
@@ -288,6 +289,7 @@ class SocketProxy {
         view.setFloat32(12, data.rotation, true);
         view.setFloat32(16, data.hp, true);
         view.setUint32(20, data.unitCount, true);
+        view.setUint8(24, data.isUnderground ? 1 : 0); // NEW: PACK UNDERGROUND STATE
         this.ws.send(buffer);
       } else {
         this.ws.send(JSON.stringify({ type, data }));
@@ -1911,36 +1913,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // PURGE: player_joined listener removed as per GHOST PROTOCOL - Handled strictly by room_update
 
-    // ANTI-THROTTLING HEARTBEAT
-    const heartbeat = setInterval(() => {
-      if (socket.connected) {
-        socket.emit('heartbeat', { id: socket.id, time: Date.now() });
-      }
-    }, 1000);
-
     return () => {
-      socket.off('connect');
-      socket.off('connect_error');
-      socket.off('room_list');
-      socket.off('update_rooms');
-      socket.off('room_created');
-      socket.off('join_success');
-      socket.off('remote_building_destroyed');
-      socket.off('remote_building_hit');
-      socket.off('remote_gate_toggled');
-      socket.off('remote_tower_fire');
-      socket.off('remote_building_placed');
-      socket.off('remote_commander_down');
-      socket.off('you_died');
-      socket.off('take_unit_damage');
-      socket.off('room_update');
-      socket.off('start_countdown');
-      socket.off('match_started');
-      socket.off('update_rematch_votes');
-      socket.off('rematch_started');
-      socket.off('error');
       socket.disconnect();
-      clearInterval(heartbeat);
     };
   }, []);
 
@@ -2156,7 +2130,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               unitCount: g.units.length,
               empireId: g.empireId,
               color: g.color,
-              attackTimer: g.attackTimer
+              attackTimer: g.attackTimer,
+              isUnderground: g.isUnderground // SYNC LAYER
             }));
 
           socketProxyRef.current.emit('sync_data', {
@@ -2212,7 +2187,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     unitCount: g.units.length,
                     empireId: g.empireId,
                     color: g.color,
-                    attackTimer: g.attackTimer
+                    attackTimer: g.attackTimer,
+                    isUnderground: g.isUnderground // SYNC LAYER
                 }));
 
             socketProxyRef.current.emit('sync_data', {
@@ -3404,8 +3380,16 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             if (foundTunnel && isFPressedLocal) {
                 if (!ent.lastTunnelToggle || Date.now() - ent.lastTunnelToggle > 800) {
+                    const wasUnderground = ent.isUnderground;
                     ent.isUnderground = !ent.isUnderground;
                     ent.lastTunnelToggle = Date.now();
+                    
+                    // FORCED SYNC: Snap to tunnel position on exit to prevent "ghosting"
+                    if (wasUnderground && !ent.isUnderground) {
+                        head.pos.x = foundTunnel.pos.x;
+                        head.pos.y = foundTunnel.pos.y;
+                    }
+
                     createDust(head.pos.x, head.pos.y, '#78350f');
                     if (keysRef.current['f']) keysRef.current['f'] = false;
                     if (keysRef.current['F']) keysRef.current['F'] = false;
@@ -4838,7 +4822,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           empireId: g.empireId, 
           color: g.color, 
           attackTimer: g.attackTimer,
-          isUnderground: g.isUnderground // NEW: Layer sync
+          isUnderground: g.isUnderground // SYNC LAYER
         }));
 
       // SYNC CARAVANS: Only host sends the caravan state to everyone
@@ -6054,24 +6038,25 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           drawEntities.forEach(ent => {
           const head = ent.units[0];
           
+          // NEW: Layer Isolation - Allow seeing across layers but with transparency
+          const p = playerRef.current;
+          let opacity = 1.0;
+          let hideName = false;
+
+          if (ent.isUnderground) {
+            opacity = 0.3; // Very transparent if underground
+            hideName = true;
+          }
+
+          // If we are also underground, we see them better
+          if (p?.isUnderground && ent.isUnderground) {
+            opacity = 0.7;
+            hideName = false;
+          }
+
           if (!isPointInView(head.pos.x, head.pos.y, VIEWPORT_BUFFER * 2)) return;
 
-          // NEW: Layer Isolation - Only see units in the same layer
-          const p = playerRef.current;
-          if (!isSpectatorRef.current && ent.isUnderground !== p?.isUnderground) {
-            return; // Invisible across layers
-          }
-
-          // Fog of War: Hide underground enemy units unless we are also underground
-          const sid = socketProxyRef.current?.id || myId;
-          const isLocal = ent.id === sid;
-          if (!isSpectatorRef.current && !isLocal && ent.isUnderground && (!p || !p.isUnderground)) {
-            return; // Invisible (redundant but safe)
-          }
-
-          // DISABLED FOW/STEALTH FOR ALL ENTITIES TO FIX INVISIBILITY BUG
-          let opacity = ent.isUnderground ? 0.4 : 1.0;
-          let hideName = ent.isUnderground;
+          // Fog of War: Grass logic
           const entInGrass = gameMapRef.current.obstacles.find(o => o.type === 'grass' && getDistance(head.pos, o.center) < o.radius);
           if (entInGrass && !ent.isUnderground) {
               opacity = 0.5;
