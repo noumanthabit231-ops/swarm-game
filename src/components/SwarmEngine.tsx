@@ -1605,14 +1605,26 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     socket.on('remote_tunnel_update', (data: any) => {
       console.log("RECEIVED REMOTE TUNNEL UPDATE:", data);
       
-      // If we receive a tunnel from the server, we MUST ensure it's added.
-      // We will re-assign the entire array to trigger any necessary React state updates (though it's a ref, it's safer for the render loop).
-      const existingIdx = tunnelsRef.current.findIndex(t => t.id === data.id);
+      // --- DATA NORMALIZATION (v2.9.3) ---
+      // Ensure server data {x, y} is converted to client format {pos: {x, y}}
+      const normalizedTunnel = {
+        ...data,
+        pos: data.pos || (data.x !== undefined && data.y !== undefined ? { x: data.x, y: data.y } : undefined),
+        x: data.x !== undefined ? data.x : (data.pos ? data.pos.x : undefined),
+        y: data.y !== undefined ? data.y : (data.pos ? data.pos.y : undefined)
+      };
+
+      if (!normalizedTunnel.pos || normalizedTunnel.pos.x === undefined) {
+        console.error("CRITICAL: Received malformed tunnel data:", data);
+        return;
+      }
+
+      const existingIdx = tunnelsRef.current.findIndex(t => t.id === normalizedTunnel.id);
       
       if (existingIdx !== -1) {
-        tunnelsRef.current[existingIdx] = data;
+        tunnelsRef.current[existingIdx] = normalizedTunnel;
       } else {
-        tunnelsRef.current.push(data);
+        tunnelsRef.current.push(normalizedTunnel);
       }
     });
 
@@ -1621,10 +1633,16 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       tunnelsRef.current = tunnelsRef.current.filter(t => t.id !== data.id);
     });
 
-    socket.on('sync_tunnels', (data: { tunnels: TunnelEntrance[] }) => {
+    socket.on('sync_tunnels', (data: { tunnels: any[] }) => {
       console.log("SYNC TUNNELS RECEIVED FROM SERVER:", data.tunnels);
       if (data.tunnels && Array.isArray(data.tunnels)) {
-        tunnelsRef.current = data.tunnels;
+        // Normalize all tunnels in the sync list
+        tunnelsRef.current = data.tunnels.map(t => ({
+          ...t,
+          pos: t.pos || (t.x !== undefined && t.y !== undefined ? { x: t.x, y: t.y } : undefined),
+          x: t.x !== undefined ? t.x : (t.pos ? t.pos.x : undefined),
+          y: t.y !== undefined ? t.y : (t.pos ? t.pos.y : undefined)
+        })).filter(t => t.pos && t.pos.x !== undefined);
       }
     });
 
@@ -2343,7 +2361,16 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     // Handle Buildings - PURE POSITION DISPLACEMENT (NO DAMAGE)
     for (const t of towers) {
-      if (!t || !t.pos) continue;
+      // --- NUCLEAR NORMALIZATION & CHECK (v2.9.3) ---
+      if (!t) continue;
+      const tX = t.x !== undefined ? t.x : (t.pos ? t.pos.x : undefined);
+      const tY = t.y !== undefined ? t.y : (t.pos ? t.pos.y : undefined);
+      
+      if (tX === undefined || tY === undefined) continue;
+      
+      // Ensure t.pos exists for the rest of the function logic
+      if (!t.pos) (t as any).pos = { x: tX, y: tY };
+
       if (t.type === 'gate' && t.isOpen) continue;
       
       // Optimization: Skip buildings that are clearly too far
@@ -2437,6 +2464,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               type: 'tunnel',
               x: headPos.x,
               y: headPos.y,
+              pos: { x: headPos.x, y: headPos.y }, // DUAL INIT (v2.9.3)
               ownerId: p.id,
               faction: p.color,
               hp: 999999
@@ -2447,6 +2475,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 id: newTunnelObj.id,
                 ownerId: p.id,
                 pos: { x: newTunnelObj.x, y: newTunnelObj.y },
+                x: newTunnelObj.x, // DUAL INIT (v2.9.3)
+                y: newTunnelObj.y, // DUAL INIT (v2.9.3)
                 color: p.color,
                 hp: 999999,
                 maxHp: 999999,
@@ -5050,18 +5080,27 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
       // Tunnels (Separate from buildings)
       tunnelsRef.current.forEach(t => {
-        if (!t || !t.pos) return; // Null check
-        if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
+        // --- DATA SAFETY CHECK (v2.9.3) ---
+        if (!t) return;
+        const tx = t.pos?.x !== undefined ? t.pos.x : t.x;
+        const ty = t.pos?.y !== undefined ? t.pos.y : t.y;
+        
+        if (tx === undefined || ty === undefined) {
+          console.warn("Faulty object (tunnel):", t);
+          return;
+        }
+
+        if (!isPointInView(tx, ty, 150)) return;
         const p = playerRef.current;
 
         // Fog of War: Hide enemy buildings if too far (unless spectator)
         if (!isSpectatorRef.current && localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined) {
-          const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+          const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, tx, ty);
           if (d > VISION_RADIUS && t.ownerId !== myId) return;
         }
 
         ctx.save();
-        ctx.translate(t.pos.x, t.pos.y);
+        ctx.translate(tx, ty);
         
         // --- DRAW TUNNEL (HOLE) ---
         ctx.fillStyle = '#3e2723'; // Dark dirt
@@ -5073,7 +5112,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
         // Interaction Hint
         if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && gameState === 'GAME_ACTIVE') {
-          const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+          const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, tx, ty);
           if (dist < 300) {
             const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
             const isOwner = t.ownerId === myId || t.ownerId === playerRef.current?.id;
@@ -5138,8 +5177,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       });
 
       towersRef.current.forEach(t => {
-        if (!t || !t.pos) return; // Null check
-        if (!isPointInView(t.pos.x, t.pos.y, 150)) return;
+        // --- DATA SAFETY CHECK (v2.9.3) ---
+        if (!t) return;
+        const tx = t.pos?.x !== undefined ? t.pos.x : t.x;
+        const ty = t.pos?.y !== undefined ? t.pos.y : t.y;
+        
+        if (tx === undefined || ty === undefined) {
+          console.warn("Faulty object (tower):", t);
+          return;
+        }
+
+        if (!isPointInView(tx, ty, 150)) return;
         
         const p = playerRef.current;
 
@@ -5149,12 +5197,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
         // Fog of War: Hide enemy buildings if too far (unless spectator)
         if (!isSpectatorRef.current && localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined) {
-          const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+          const d = getDistanceSimple(localHeadPos.x, localHeadPos.y, tx, ty);
           if (d > VISION_RADIUS && t.ownerId !== myId) return;
         }
 
         ctx.save();
-        ctx.translate(t.pos.x, t.pos.y);
+        ctx.translate(tx, ty);
         
         // Auto-detect empire style if missing or neutral (rendering safety)
         let renderEmpireId = t.empireId;
@@ -5457,7 +5505,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             // Interaction Hint (Press F to Open/Close) - Only for owner
             if (localHeadPos && localHeadPos.x !== undefined && localHeadPos.y !== undefined && (t.ownerId === myId || t.color === playerRef.current?.color || t.faction === playerRef.current?.color)) {
-                const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, t.pos.x, t.pos.y);
+                const dist = getDistanceSimple(localHeadPos.x, localHeadPos.y, tx, ty);
                 if (dist < 150) {
                     const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
                     ctx.save();
@@ -6406,6 +6454,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         framesRef.current = 0;
         lastTimeRef.current = now;
       }
+    } catch (e) {
+      console.error("CRITICAL RENDER ERROR (Ue):", e);
+    }
     };
     const rid = requestAnimationFrame(render); return () => cancelAnimationFrame(rid);
   }, [myId, nickname, isPlacingWall, isPlacingGate, isPlacingTower, gameState]);
