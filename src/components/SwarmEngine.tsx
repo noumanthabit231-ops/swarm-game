@@ -1784,6 +1784,121 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       }
     });
 
+    socket.on('world_state', (state: any) => {
+      if (!state) return;
+
+      if (Array.isArray(state.buildings) || Array.isArray(state.tunnels)) {
+        syncRoomStructures({
+          buildings: Array.isArray(state.buildings) ? state.buildings : [],
+          tunnels: Array.isArray(state.tunnels) ? state.tunnels : []
+        } as Room);
+      }
+
+      const serverActors = [
+        ...(Array.isArray(state.players) ? state.players : []),
+        ...(Array.isArray(state.npcGroups) ? state.npcGroups : [])
+      ];
+      const seenIds = new Set<string>();
+      const localId = socket.id || myIdRef.current;
+
+      serverActors.forEach((actor: any) => {
+        const actorId = String(actor.id || '');
+        if (!actorId) return;
+        seenIds.add(actorId);
+
+        const soldierCount = Math.max(0, Math.floor(actor.unitCount || 0));
+        const realPos: Vector = {
+          x: Number(actor.x ?? 0),
+          y: Number(actor.y ?? 0)
+        };
+        const realAngle = Number(actor.rotation ?? 0);
+        const isLocalActor = actorId === localId || actorId === myId;
+
+        if (isLocalActor) {
+          const localPlayer = playerRef.current;
+          if (!localPlayer || !localPlayer.units[0]) return;
+          localPlayer.isUnderground = !!actor.isUnderground;
+          localPlayer.isAttacking = !!actor.isAttacking;
+          localPlayer.isDashing = !!actor.isDashing;
+          localPlayer.akce = Number(actor.akce ?? localPlayer.akce ?? 0);
+          localPlayer.facingAngle = realAngle;
+          localPlayer.targetAngle = realAngle;
+          localPlayer.name = actor.name || localPlayer.name;
+          if (actor.faction) {
+            localPlayer.color = actor.faction;
+            localPlayer.faction = actor.faction;
+          }
+          if (actor.empireId) localPlayer.empireId = actor.empireId;
+          localPlayer.units[0].hp = typeof actor.hp === 'number' ? actor.hp : COMMANDER_MAX_HP;
+          syncEntityVisualUnits(localPlayer, soldierCount);
+          setScore(soldierCount);
+          return;
+        }
+
+        let ent = entitiesRef.current.find((item) => item.id === actorId);
+        if (!ent) {
+          ent = {
+            id: actorId,
+            name: actor.name || (actor.type === 'ai' ? 'NPC Squad' : `Commander #${actorId.slice(0, 3)}`),
+            type: actor.type === 'ai' ? 'ai' : 'player',
+            units: [{
+              id: generateId('c'),
+              pos: { ...realPos },
+              color: actor.faction || '#94a3b8',
+              type: 'infantry',
+              hp: typeof actor.hp === 'number' ? actor.hp : COMMANDER_MAX_HP
+            }],
+            color: actor.faction || '#94a3b8',
+            faction: actor.faction || '#94a3b8',
+            empireId: actor.empireId || 'neutral',
+            score: soldierCount,
+            akce: Number(actor.akce ?? 0),
+            lastKnownUnitCount: soldierCount,
+            isDashing: !!actor.isDashing,
+            velocity: { x: 0, y: 0 },
+            facingAngle: realAngle,
+            isAttacking: !!actor.isAttacking,
+            attackTimer: 0,
+            attackCooldown: 0,
+            weightSlowdown: 0,
+            splitCooldown: 0,
+            targetPos: { ...realPos },
+            targetAngle: realAngle,
+            lastUpdate: Date.now(),
+            lastPos: { ...realPos },
+            isUnderground: !!actor.isUnderground
+          } as Entity;
+          entitiesRef.current.push(ent);
+        }
+
+        ent.name = actor.name || ent.name;
+        ent.type = actor.type === 'ai' ? 'ai' : 'player';
+        ent.color = actor.faction || ent.color;
+        ent.faction = actor.faction || ent.faction;
+        ent.empireId = actor.empireId || ent.empireId;
+        ent.akce = Number(actor.akce ?? ent.akce ?? 0);
+        ent.isDashing = !!actor.isDashing;
+        ent.isAttacking = !!actor.isAttacking;
+        ent.isUnderground = !!actor.isUnderground;
+        ent.facingAngle = realAngle;
+        ent.targetAngle = realAngle;
+        ent.targetPos = { ...realPos };
+        ent.lastPos = { ...realPos };
+        ent.lastUpdate = Date.now();
+        if (ent.units[0]) ent.units[0].hp = typeof actor.hp === 'number' ? actor.hp : COMMANDER_MAX_HP;
+        syncEntityVisualUnits(ent, soldierCount);
+        remotePlayersRef.current.set(actorId, ent);
+      });
+
+      entitiesRef.current = entitiesRef.current.filter((entity) => {
+        if (entity.id === myId || entity.id === myIdRef.current) return true;
+        if (entity.type !== 'player' && entity.type !== 'ai') return true;
+        const keep = seenIds.has(String(entity.id));
+        if (!keep) remotePlayersRef.current.delete(String(entity.id));
+        return keep;
+      });
+    });
+
     socket.on('remote_update', (data: any) => {
       if (!data || !data.id) return;
 
@@ -2138,6 +2253,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
       socket.off('start_countdown');
       socket.off('match_started');
       socket.off('split_result');
+      socket.off('world_state');
       socket.off('update_rematch_votes');
       socket.off('rematch_started');
       socket.off('remote_garrison_hit');
