@@ -18,7 +18,7 @@ interface SwarmEngineProps {
   language: Language;
 }
 
-const SOCKET_URL = 'wss://natural-prosperity-production.up.railway.app';
+const SOCKET_URL = 'wss://server-for-sultans-game-production.up.railway.app';
 
 const WORLD_SIZE = 4000;
 const LOBBY_WORLD_SIZE = 1200;
