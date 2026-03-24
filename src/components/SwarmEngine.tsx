@@ -968,6 +968,61 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     });
   }, [nickname]);
 
+  const getFollowerFormationPos = useCallback((headPos: Vector, facingAngle: number, followerIndex: number): Vector => {
+    const angle = (facingAngle || 0) + Math.PI / 2;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    const cols = 4;
+    const xSpacing = 28;
+    const ySpacing = 34;
+    const row = Math.floor(followerIndex / cols);
+    const col = followerIndex % cols;
+    const ox = (col - 1.5) * xSpacing;
+    const oy = (row + 1) * ySpacing;
+
+    return {
+      x: headPos.x + (ox * cosA - oy * sinA),
+      y: headPos.y + (ox * sinA + oy * cosA)
+    };
+  }, []);
+
+  const syncEntityVisualUnits = useCallback((ent: Entity, soldierCount: number) => {
+    if (!ent.units[0]) return;
+
+    const safeSoldierCount = Math.max(0, Math.floor(soldierCount));
+    const targetTotalCount = safeSoldierCount + 1;
+    const head = ent.units[0];
+
+    if (!Number.isFinite(head.pos.x) || !Number.isFinite(head.pos.y)) {
+      head.pos = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+    }
+
+    while (ent.units.length > targetTotalCount) {
+      ent.units.pop();
+    }
+
+    while (ent.units.length < targetTotalCount) {
+      const formationPos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, ent.units.length - 1);
+      ent.units.push({
+        id: generateId('u'),
+        pos: formationPos,
+        color: ent.color,
+        type: 'infantry',
+        hp: 100
+      });
+    }
+
+    for (let i = 1; i < ent.units.length; i++) {
+      const unit = ent.units[i];
+      if (!Number.isFinite(unit.pos.x) || !Number.isFinite(unit.pos.y)) {
+        unit.pos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, i - 1);
+      }
+    }
+
+    ent.lastKnownUnitCount = safeSoldierCount;
+    ent.score = safeSoldierCount;
+  }, [getFollowerFormationPos]);
+
   const createSplitGarrison = useCallback((ent: Entity, splitCount: number, mode: 'HOLD' | 'HUNT' | 'RECALL') => {
     const normalizedSplitCount = Math.min(Math.max(0, Math.floor(splitCount)), Math.max(0, ent.units.length - 1));
     if (normalizedSplitCount <= 0) return null;
@@ -1562,8 +1617,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   p.units[0].hp = authoritativeHp;
                   createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
                 }
-                p.lastKnownUnitCount = authoritativeSoldierCount;
-                p.score = authoritativeSoldierCount;
+                syncEntityVisualUnits(p, authoritativeSoldierCount);
                 setScore(authoritativeSoldierCount);
             }
           }
@@ -1750,20 +1804,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           localHead.hp = authoritativeHp;
         }
         if (authoritativeTotalCount !== undefined) {
-          while (localPlayer.units.length > authoritativeTotalCount) {
-            localPlayer.units.pop();
-          }
-          while (localPlayer.units.length < authoritativeTotalCount && localPlayer.units[0]) {
-            localPlayer.units.push({
-              id: generateId('u'),
-              pos: { ...localHead.pos },
-              color: localPlayer.color,
-              type: 'infantry',
-              hp: 100
-            });
-          }
-          localPlayer.lastKnownUnitCount = authoritativeSoldierCount;
-          localPlayer.score = authoritativeSoldierCount;
+          syncEntityVisualUnits(localPlayer, authoritativeSoldierCount ?? 0);
           setScore(authoritativeSoldierCount);
         }
         return;
@@ -1869,19 +1910,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           }
           
           if (authoritativeSoldierCount !== undefined) {
-            const desiredSoldierCount = authoritativeSoldierCount;
-            const desiredTotalCount = desiredSoldierCount + 1;
-            const currentCount = ent.units.length;
-            
-            if (desiredTotalCount > currentCount) {
-              const diff = desiredTotalCount - currentCount;
-              for (let i = 0; i < diff; i++) {
-                ent.units.push({ id: generateId('u'), pos: { ...realPos }, color: ent.color, type: 'infantry', hp: 100 });
-              }
-            } else if (desiredTotalCount < currentCount) {
-              ent.units = ent.units.slice(0, desiredTotalCount);
-            }
-            ent.lastKnownUnitCount = desiredSoldierCount;
+            syncEntityVisualUnits(ent, authoritativeSoldierCount);
           }
         }
         remotePlayersRef.current.set(pid, ent);
@@ -3553,8 +3582,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         ent.lastPos = { ...head.pos };
 
         // Swarm cohesion for all units
-        const angle = (ent.facingAngle || 0) + Math.PI / 2;
-        const cosA = Math.cos(angle), sinA = Math.sin(angle);
         const isLocal = ent.id === sid;
 
         // FIXED: Using frame-rate independent LERP for all unit swarms
@@ -3568,6 +3595,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
         for (let i = 1; i < unitCount; i += 1) {
             const u = ent.units[i];
+            if (!Number.isFinite(u.pos.x) || !Number.isFinite(u.pos.y)) {
+                u.pos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, i - 1);
+            }
             
             // For very large armies, we can skip expensive trig/cohesion for some units
             // and just make them follow the unit ahead of them (much cheaper)
@@ -3579,20 +3609,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 continue;
             }
 
-            let ox, oy;
-            if (ent.isDashing) {
-                const row = Math.sqrt(i) | 0, colInRow = i - row * row;
-                ox = (colInRow - row) * (UNIT_RADIUS * 2.5); oy = (row + 1) * (UNIT_RADIUS * 3.5);
-            } else {
-                // TRAVEL & ATTACK FORMATION: Consistent 5-column layout
-                // User requested attack to NOT change formation shape
-                const xSpacing = 32, ySpacing = 38, cols = 5;
-                const row = ((i - 1) / cols) | 0, col = (i - 1) % cols;
-                ox = (col - 2) * xSpacing; oy = (row + 1) * ySpacing;
-            }
-            
-            const tx = head.pos.x + (ox * cosA - oy * sinA);
-            const ty = head.pos.y + (ox * sinA + oy * cosA);
+            const targetPos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, i - 1);
+            const tx = targetPos.x;
+            const ty = targetPos.y;
             u.pos.x += (tx - u.pos.x) * lerpFactor;
             u.pos.y += (ty - u.pos.y) * lerpFactor;
         }
@@ -3895,7 +3914,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               const neighbor = neighbors[i];
               if (neighbor.entityId !== 'neutral') continue;
               if (getDistance(head.pos, neighbor.unit.pos) < 400) {
-                ent.units.push({ ...neighbor.unit, color: ent.color, empireId: ent.empireId });
+                const spawnPos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, Math.max(0, ent.units.length - 1));
+                ent.units.push({ ...neighbor.unit, pos: spawnPos, color: ent.color, empireId: ent.empireId, hp: 100 });
                 neutralsRef.current = neutralsRef.current.filter(nu => nu.id !== neighbor.unit.id);
                 neighbors.splice(i, 1);
                 if (ent.id === myId) { 
@@ -3904,7 +3924,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     recruitedIds: [neighbor.unit.id]
                   });
                   setTotalRecruitsMatch(r => r + 1); 
-                  setScore(ent.units.length);
+                  syncEntityVisualUnits(ent, ent.units.length - 1);
+                  setScore(Math.max(0, ent.units.length - 1));
                   pendingRecruitsRef.current.add(neighbor.unit.id);
                 }
               }
