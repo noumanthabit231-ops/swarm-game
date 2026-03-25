@@ -4030,6 +4030,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     if (ENGINE_STATE === 'GAME_ACTIVE') {
       // Neutral Recruitment
       entitiesRef.current.forEach(ent => {
+        const canRecruitForEntity = ent.id === myId || (!isMultiplayer && ent.type === 'ai');
+        if (!canRecruitForEntity) return;
         if (ent.units.length === 0 || ent.isUnderground) return; // NEW: Underground can't recruit surface neutrals
         const head = ent.units[0];
         const gx = Math.floor(head.pos.x / GRID_CELL_SIZE);
@@ -5005,11 +5007,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         isUnderground: p.isUnderground ?? false, 
         equippedItem: p.equippedItem, // NEW: Sync equipped item
         name: nickname, 
-        recruitedIds: Array.from(pendingRecruitsRef.current), 
         garrisons: garrisonsToSync, 
         caravans: caravansToSync
       });
-      pendingRecruitsRef.current.clear();
     }
 
     frameId.current = requestAnimationFrame(update);
