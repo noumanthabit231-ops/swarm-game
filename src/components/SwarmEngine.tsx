@@ -1057,7 +1057,16 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
     const serverCount = Math.max(0, Math.floor(authoritativeSoldierCount || 0));
     const pendingCount = pendingRecruitsRef.current.size;
-    return serverCount + pendingCount;
+    const currentVisualCount = Math.max(0, (playerRef.current?.units.length || 1) - 1);
+    return Math.max(serverCount, Math.min(currentVisualCount, serverCount + pendingCount));
+  }, []);
+
+  const registerPendingUnitAdds = useCallback((count: number, source: string) => {
+    const safeCount = Math.max(0, Math.floor(count));
+    const now = Date.now();
+    for (let i = 0; i < safeCount; i++) {
+      pendingRecruitsRef.current.set(`${source}:${now}:${i}:${Math.random().toString(36).slice(2, 8)}`, now);
+    }
   }, []);
 
   const createSplitGarrison = useCallback((ent: Entity, splitCount: number, mode: 'HOLD' | 'HUNT' | 'RECALL') => {
@@ -3120,12 +3129,19 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             const pHead = playerRef.current?.units[0];
             if (pHead && getDistance(clickedGarrison.pos, pHead.pos) < 150) {
                 // Rejoin
+                const returnedUnitCount = clickedGarrison.units.length;
                 playerRef.current.units.push(...clickedGarrison.units);
                 const gIdx = garrisonsRef.current.findIndex(g => g.id === clickedGarrison.id);
                 if (gIdx !== -1) garrisonsRef.current.splice(gIdx, 1);
                 recentlyDestroyedGarrisons.current.set(clickedGarrison.id, Date.now());
                 setPlayerGarrisons([...garrisonsRef.current.filter(xg => xg.ownerId === myId)]);
                 createDust(clickedGarrison.pos.x, clickedGarrison.pos.y, clickedGarrison.color);
+                registerPendingUnitAdds(returnedUnitCount, `rejoin:${clickedGarrison.id}`);
+                socketRef.current?.emit('rejoin_garrison', {
+                  roomId: currentRoomRef.current?.id,
+                  garrisonId: clickedGarrison.id,
+                  returnedUnitCount
+                });
                 socketRef.current?.emit('garrison_destroyed', { roomId: currentRoomRef.current?.id, garrisonId: clickedGarrison.id, ownerId: myId });
                 lastSyncTimeRef.current = 0; 
                 return;
@@ -3944,7 +3960,14 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     if (g.ownerId === myId) {
                         const me = entitiesRef.current.find(e => e.id === myId);
                         if (me) {
+                            const returnedUnitCount = g.units.length;
                             me.units.push(...g.units);
+                            registerPendingUnitAdds(returnedUnitCount, `rejoin:${g.id}`);
+                            socketRef.current?.emit('rejoin_garrison', {
+                              roomId: currentRoomRef.current?.id,
+                              garrisonId: g.id,
+                              returnedUnitCount
+                            });
                             g.units = [];
                         }
                     }
@@ -4905,6 +4928,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             // Rejoin logic
             if (playerRef.current) {
+                const returnedUnitCount = nearbyGarrison.units.length;
                 playerRef.current.units.push(...nearbyGarrison.units);
                 
                 // Remove from local
@@ -4916,6 +4940,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 
                 // Visual
                 createDust(nearbyGarrison.pos.x, nearbyGarrison.pos.y, nearbyGarrison.color);
+                registerPendingUnitAdds(returnedUnitCount, `rejoin:${nearbyGarrison.id}`);
+                socketRef.current?.emit('rejoin_garrison', {
+                    roomId: currentRoomRef.current?.id,
+                    garrisonId: nearbyGarrison.id,
+                    returnedUnitCount
+                });
                 
                 // Sync
                 socketRef.current?.emit('garrison_destroyed', { 
@@ -7427,6 +7457,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                               for(let i=0; i<count; i++) {
                                 playerRef.current.units.push({ id: generateId(), pos: { ...playerRef.current.units[0].pos }, color: playerRef.current.color, type: 'infantry', hp: 100 });
                               }
+                              registerPendingUnitAdds(count, 'purchase');
+                              socketRef.current?.emit('purchase_units', {
+                                roomId: currentRoomRef.current?.id,
+                                count,
+                                akce: playerRef.current.akce
+                              });
                               setScore(Math.max(0, playerRef.current.units.length - 1));
                               createDust(playerRef.current.units[0].pos.x, playerRef.current.units[0].pos.y, playerRef.current.color);
                             } else {

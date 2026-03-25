@@ -834,6 +834,64 @@ server.ws('/*', {
           break;
         }
 
+        case 'purchase_units': {
+          const roomId = data.roomId || ws.roomId;
+          const room = rooms.get(roomId);
+          if (!room) break;
+
+          const player = room.players.find((entry) => entry.id === ws.id);
+          if (!player) break;
+
+          const purchasedCount = Math.max(0, Math.floor(data.count || 0));
+          if (purchasedCount <= 0) break;
+
+          player.unitCount = Math.max(0, Math.floor(player.unitCount || 0)) + purchasedCount;
+          if (typeof data.akce === 'number') {
+            player.akce = data.akce;
+          }
+
+          combatLog('purchase_units', {
+            roomId,
+            playerId: player.id,
+            purchasedCount,
+            resultingUnitCount: player.unitCount,
+            akce: player.akce
+          });
+
+          broadcastPlayerState(server, room, player, {
+            akce: player.akce,
+            currentUnitCount: player.unitCount
+          });
+          break;
+        }
+
+        case 'rejoin_garrison': {
+          const roomId = data.roomId || ws.roomId;
+          const room = rooms.get(roomId);
+          if (!room) break;
+
+          const player = room.players.find((entry) => entry.id === ws.id);
+          if (!player) break;
+
+          const returnedUnitCount = Math.max(0, Math.floor(data.returnedUnitCount || 0));
+          if (returnedUnitCount <= 0) break;
+
+          player.unitCount = Math.max(0, Math.floor(player.unitCount || 0)) + returnedUnitCount;
+
+          combatLog('rejoin_garrison', {
+            roomId,
+            playerId: player.id,
+            garrisonId: data.garrisonId || null,
+            returnedUnitCount,
+            resultingUnitCount: player.unitCount
+          });
+
+          broadcastPlayerState(server, room, player, {
+            currentUnitCount: player.unitCount
+          });
+          break;
+        }
+
         case 'start_match_request': {
           const roomId = typeof data === 'string' ? data : data.roomId;
           const room = rooms.get(roomId);
