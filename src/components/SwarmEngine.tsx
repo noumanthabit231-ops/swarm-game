@@ -24,9 +24,15 @@ const CLIENT_SYNC_INTERVAL = 50;
 const SYNC_PACKET_HEADER_SIZE = 25;
 const SYNC_PACKET_UNIT_COUNT_SENTINEL = 0xffffffff;
 const syncPacketEncoder = new TextEncoder();
+const COMBAT_DEBUG = (import.meta as any).env?.VITE_COMBAT_DEBUG !== '0';
 
 type SocketEventHandler = (data?: any) => void;
 type SocketAnyHandler = (eventName: string, data?: any) => void;
+
+const combatDebug = (event: string, payload?: any) => {
+  if (!COMBAT_DEBUG) return;
+  console.debug(`[combat-ui] ${event}`, payload);
+};
 
 const getTransportUrl = (input: string) => {
   const isSecurePage = typeof window !== 'undefined' && window.location.protocol === 'https:';
@@ -1574,6 +1580,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             
             const targetUnit = p.units[idx];
             if (targetUnit) {
+                const beforeSoldierCount = Math.max(0, p.units.length - 1);
+                const beforeHp = p.units[0]?.hp || COMMANDER_MAX_HP;
                 const authoritativeSoldierCount = typeof data.currentUnitCount === 'number'
                   ? Math.max(0, Math.floor(data.currentUnitCount))
                   : Math.max(0, p.units.length - 1);
@@ -1599,6 +1607,15 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   p.units[0].hp = authoritativeHp;
                   createDust(p.units[0].pos.x, p.units[0].pos.y, p.color);
                 }
+                combatDebug('take_unit_damage_local', {
+                  attackerId: data.attackerId || null,
+                  targetPlayerId: data.targetPlayerId,
+                  beforeSoldierCount,
+                  afterSoldierCount: authoritativeSoldierCount,
+                  beforeHp,
+                  afterHp: authoritativeHp,
+                  serverMessage: data.serverMessage || null
+                });
                 syncEntityVisualUnits(p, authoritativeSoldierCount);
                 setScore(authoritativeSoldierCount);
             }
@@ -1798,6 +1815,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         if (isLocalActor) {
           const localPlayer = playerRef.current;
           if (!localPlayer || !localPlayer.units[0]) return;
+          const beforeSoldierCount = Math.max(0, localPlayer.units.length - 1);
+          const beforeHp = localPlayer.units[0].hp;
           localPlayer.isUnderground = !!actor.isUnderground;
           localPlayer.isAttacking = !!actor.isAttacking;
           localPlayer.isDashing = !!actor.isDashing;
@@ -1813,6 +1832,16 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           if (actor.empireId) localPlayer.empireId = actor.empireId;
           localPlayer.units[0].hp = typeof actor.hp === 'number' ? actor.hp : COMMANDER_MAX_HP;
           const resolvedLocalSoldierCount = resolveLocalSoldierCount(soldierCount);
+          if (beforeSoldierCount !== resolvedLocalSoldierCount || beforeHp !== localPlayer.units[0].hp) {
+            combatDebug('world_state_local_player', {
+              actorId,
+              beforeSoldierCount,
+              serverSoldierCount: soldierCount,
+              resolvedLocalSoldierCount,
+              beforeHp,
+              serverHp: localPlayer.units[0].hp
+            });
+          }
           syncEntityVisualUnits(localPlayer, resolvedLocalSoldierCount);
           setScore(resolvedLocalSoldierCount);
           return;
