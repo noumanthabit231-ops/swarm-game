@@ -31,7 +31,20 @@ type SocketAnyHandler = (eventName: string, data?: any) => void;
 
 const combatDebug = (event: string, payload?: any) => {
   if (!COMBAT_DEBUG) return;
-  console.debug(`[combat-ui] ${event}`, payload);
+  const entry = {
+    ts: new Date().toISOString(),
+    event,
+    payload: payload ?? null
+  };
+  const debugHost = window as typeof window & { __combatDebugLog?: Array<typeof entry> };
+  if (!Array.isArray(debugHost.__combatDebugLog)) {
+    debugHost.__combatDebugLog = [];
+  }
+  debugHost.__combatDebugLog.push(entry);
+  if (debugHost.__combatDebugLog.length > 200) {
+    debugHost.__combatDebugLog.splice(0, debugHost.__combatDebugLog.length - 200);
+  }
+  console.log(`[combat-ui] ${event}`, payload);
 };
 
 const getTransportUrl = (input: string) => {
