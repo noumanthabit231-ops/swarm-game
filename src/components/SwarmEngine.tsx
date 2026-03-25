@@ -972,13 +972,12 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     const angle = (facingAngle || 0) + Math.PI / 2;
     const cosA = Math.cos(angle);
     const sinA = Math.sin(angle);
-    const cols = 6;
-    const xSpacing = 36;
-    const ySpacing = 42;
+    const cols = 5;
+    const xSpacing = 38;
+    const ySpacing = 44;
     const row = Math.floor(followerIndex / cols);
     const col = followerIndex % cols;
-    const rowOffset = row % 2 === 0 ? 0 : xSpacing * 0.5;
-    const ox = (col - (cols - 1) / 2) * xSpacing + rowOffset;
+    const ox = (col - (cols - 1) / 2) * xSpacing;
     const oy = (row + 1) * ySpacing;
 
     return {
@@ -1023,6 +1022,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     ent.lastKnownUnitCount = safeSoldierCount;
     ent.score = safeSoldierCount;
   }, [getFollowerFormationPos]);
+
+  const resolveLocalSoldierCount = useCallback((authoritativeSoldierCount?: number, recruitedIds?: string[]) => {
+    if (Array.isArray(recruitedIds) && recruitedIds.length > 0) {
+      recruitedIds.forEach((rid) => pendingRecruitsRef.current.delete(rid));
+    }
+
+    const serverCount = Math.max(0, Math.floor(authoritativeSoldierCount || 0));
+    const pendingCount = pendingRecruitsRef.current.size;
+    const currentVisualCount = Math.max(0, (playerRef.current?.units.length || 1) - 1);
+    return Math.max(serverCount, Math.min(currentVisualCount, serverCount + pendingCount));
+  }, []);
 
   const createSplitGarrison = useCallback((ent: Entity, splitCount: number, mode: 'HOLD' | 'HUNT' | 'RECALL') => {
     const normalizedSplitCount = Math.min(Math.max(0, Math.floor(splitCount)), Math.max(0, ent.units.length - 1));
@@ -1830,8 +1840,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           }
           if (actor.empireId) localPlayer.empireId = actor.empireId;
           localPlayer.units[0].hp = typeof actor.hp === 'number' ? actor.hp : COMMANDER_MAX_HP;
-          syncEntityVisualUnits(localPlayer, soldierCount);
-          setScore(soldierCount);
+          const resolvedLocalSoldierCount = resolveLocalSoldierCount(soldierCount);
+          syncEntityVisualUnits(localPlayer, resolvedLocalSoldierCount);
+          setScore(resolvedLocalSoldierCount);
           return;
         }
 
@@ -1920,8 +1931,9 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           localHead.hp = authoritativeHp;
         }
         if (authoritativeTotalCount !== undefined) {
-          syncEntityVisualUnits(localPlayer, authoritativeSoldierCount ?? 0);
-          setScore(authoritativeSoldierCount);
+          const resolvedLocalSoldierCount = resolveLocalSoldierCount(authoritativeSoldierCount, data.recruitedIds);
+          syncEntityVisualUnits(localPlayer, resolvedLocalSoldierCount);
+          setScore(resolvedLocalSoldierCount);
         }
         return;
       }
@@ -3165,6 +3177,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
   const startLobbyArena = useCallback((players: LobbyPlayer[]) => {
     setKills(0); setScore(0); setTotalRecruitsMatch(0); 
+    pendingRecruitsRef.current.clear();
     worldSizeRef.current = LOBBY_WORLD_SIZE;
     const lobbyMap = MapGenerator.generate(123, LOBBY_WORLD_SIZE);
     gameMapRef.current = {
@@ -3205,7 +3218,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             type: 'infantry',
             hp: COMMANDER_MAX_HP
         }];
-        existing.score = 1;
+        existing.score = 0;
         existing.akce = 0;
         existing.color = factionColor;
         existing.isUnderground = false;
@@ -3229,7 +3242,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         color: isMe ? playerColor : remoteColor,
         faction: isMe ? playerColor : remoteColor,
         empireId: isMe ? initialEmpire.id : (p.empireId || cached?.empireId || 'neutral'),
-        score: 1,
+        score: 0,
         akce: 0,
         isDashing: false,
         velocity: { x: 0, y: 0 },
@@ -3260,6 +3273,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const initGame = useCallback((seed: number, players: Entity[]) => {
     // Initialize battle arena
     setKills(0); setScore(0); setTotalRecruitsMatch(0); 
+    pendingRecruitsRef.current.clear();
     
     // Dynamic World Size based on player count
     const playerCount = players?.length || 1;
@@ -3310,6 +3324,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           existing.units[0].pos = { ...sPos };
           existing.units[0].hp = COMMANDER_MAX_HP;
         }
+        existing.score = 0;
+        existing.lastKnownUnitCount = 0;
         existing.isUnderground = false;
         return existing;
       }
@@ -3319,7 +3335,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
         color: isLocal ? playerColor : (p.color || '#94a3b8'), 
         faction: isLocal ? playerColor : (p.faction || '#94a3b8'),
         units: [{ id: generateId(), color: isLocal ? playerColor : (p.color || '#94a3b8'), pos: { ...sPos }, type: 'infantry', hp: COMMANDER_MAX_HP }],
-        score: p.score || 1,
+        score: typeof p.score === 'number' ? p.score : 0,
         akce: p.akce || 0,
         isDashing: false,
         velocity: {x: 0, y:0},
