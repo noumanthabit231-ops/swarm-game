@@ -1802,6 +1802,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           localPlayer.isAttacking = !!actor.isAttacking;
           localPlayer.isDashing = !!actor.isDashing;
           localPlayer.akce = Number(actor.akce ?? localPlayer.akce ?? 0);
+          setPlayerAkce(localPlayer.akce);
           localPlayer.facingAngle = realAngle;
           localPlayer.targetAngle = realAngle;
           localPlayer.name = actor.name || localPlayer.name;
@@ -1900,6 +1901,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
         if (authoritativeHp !== undefined) {
           localHead.hp = authoritativeHp;
+        }
+        if (typeof data.akce === 'number') {
+          localPlayer.akce = data.akce;
+          setPlayerAkce(data.akce);
         }
         if (authoritativeTotalCount !== undefined) {
           const resolvedLocalSoldierCount = resolveLocalSoldierCount(authoritativeSoldierCount, data.recruitedIds);
@@ -2486,20 +2491,26 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
      const toRemove = count === 'ALL' ? availableToDismiss : Math.min(count, availableToDismiss);
      
      if (toRemove <= 0) return;
- 
-     // Remove from the end of the array (not the commander at index 0)
-     const removed = ent.units.splice(ent.units.length - toRemove, toRemove);
-     
-     // Refund: 5 Akçe per unit
-     const refund = removed.length * 5;
-     ent.akce += refund;
-     
-     if (ent.id === myId) {
-       setPlayerAkce(ent.akce);
-       // Small visual feedback? 
-       shakeRef.current = 5;
-     }
-   }, [myId]);
+
+    if (isMultiplayer && currentRoomRef.current?.id && ent.id === myId) {
+      socketRef.current?.emit('dismiss_units', {
+        roomId: currentRoomRef.current.id,
+        count
+      });
+      shakeRef.current = 5;
+      return;
+    }
+
+    const removed = ent.units.splice(ent.units.length - toRemove, toRemove);
+    const refund = removed.length * 5;
+    ent.akce += refund;
+    
+    if (ent.id === myId) {
+      setPlayerAkce(ent.akce);
+      setScore(Math.max(0, ent.units.length - 1));
+      shakeRef.current = 5;
+    }
+  }, [isMultiplayer, myId]);
  
     const resolveCollision = (pos: Vector, vel: Vector, obstacles: Obstacle[], towers: Tower[] = []): Vector => {
     let nx = pos.x + vel.x;
