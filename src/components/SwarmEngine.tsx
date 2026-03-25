@@ -25,7 +25,6 @@ const SYNC_PACKET_HEADER_SIZE = 25;
 const SYNC_PACKET_UNIT_COUNT_SENTINEL = 0xffffffff;
 const syncPacketEncoder = new TextEncoder();
 const COMBAT_DEBUG = (import.meta as any).env?.VITE_COMBAT_DEBUG !== '0';
-const PENDING_RECRUIT_TTL_MS = 1500;
 
 type SocketEventHandler = (data?: any) => void;
 type SocketAnyHandler = (eventName: string, data?: any) => void;
@@ -738,7 +737,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const recentlyDestroyedGarrisons = useRef<Map<string, number>>(new Map());
   const recentlyDestroyedPlayers = useRef<Map<string, number>>(new Map()); // Player tombstones
   const particlesRef = useRef<Particle[]>([]);
-  const pendingRecruitsRef = useRef<Map<string, number>>(new Map());
   const gameMapRef = useRef<{ obstacles: Obstacle[], villages: Village[], futureVillages?: Village[] }>({ obstacles: [], villages: [], futureVillages: [] });
   const caravansRef = useRef<Caravan[]>([]);
   const joystickDir = useRef<Vector>({ x: 0, y: 0 });
@@ -1043,30 +1041,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
     ent.score = safeSoldierCount;
   }, [getFollowerFormationPos]);
 
-  const resolveLocalSoldierCount = useCallback((authoritativeSoldierCount?: number, recruitedIds?: string[]) => {
-    const now = Date.now();
-    if (Array.isArray(recruitedIds) && recruitedIds.length > 0) {
-      recruitedIds.forEach((rid) => pendingRecruitsRef.current.delete(rid));
-    }
-
-    for (const [rid, ts] of pendingRecruitsRef.current.entries()) {
-      if (now - ts > PENDING_RECRUIT_TTL_MS) {
-        pendingRecruitsRef.current.delete(rid);
-      }
-    }
-
-    const serverCount = Math.max(0, Math.floor(authoritativeSoldierCount || 0));
-    const pendingCount = pendingRecruitsRef.current.size;
-    const currentVisualCount = Math.max(0, (playerRef.current?.units.length || 1) - 1);
-    return Math.max(serverCount, Math.min(currentVisualCount, serverCount + pendingCount));
-  }, []);
-
-  const registerPendingUnitAdds = useCallback((count: number, source: string) => {
-    const safeCount = Math.max(0, Math.floor(count));
-    const now = Date.now();
-    for (let i = 0; i < safeCount; i++) {
-      pendingRecruitsRef.current.set(`${source}:${now}:${i}:${Math.random().toString(36).slice(2, 8)}`, now);
-    }
+  const resolveLocalSoldierCount = useCallback((authoritativeSoldierCount?: number) => {
+    return Math.max(0, Math.floor(authoritativeSoldierCount || 0));
   }, []);
 
   const createSplitGarrison = useCallback((ent: Entity, splitCount: number, mode: 'HOLD' | 'HUNT' | 'RECALL') => {
@@ -1965,7 +1941,7 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           setPlayerAkce(data.akce);
         }
         if (authoritativeTotalCount !== undefined) {
-          const resolvedLocalSoldierCount = resolveLocalSoldierCount(authoritativeSoldierCount, data.recruitedIds);
+          const resolvedLocalSoldierCount = resolveLocalSoldierCount(authoritativeSoldierCount);
           syncEntityVisualUnits(localPlayer, resolvedLocalSoldierCount);
           setScore(resolvedLocalSoldierCount);
         }
@@ -3136,7 +3112,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 recentlyDestroyedGarrisons.current.set(clickedGarrison.id, Date.now());
                 setPlayerGarrisons([...garrisonsRef.current.filter(xg => xg.ownerId === myId)]);
                 createDust(clickedGarrison.pos.x, clickedGarrison.pos.y, clickedGarrison.color);
-                registerPendingUnitAdds(returnedUnitCount, `rejoin:${clickedGarrison.id}`);
                 socketRef.current?.emit('rejoin_garrison', {
                   roomId: currentRoomRef.current?.id,
                   garrisonId: clickedGarrison.id,
@@ -3224,7 +3199,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
   const startLobbyArena = useCallback((players: LobbyPlayer[]) => {
     setKills(0); setScore(0); setTotalRecruitsMatch(0); 
-    pendingRecruitsRef.current.clear();
     worldSizeRef.current = LOBBY_WORLD_SIZE;
     const lobbyMap = MapGenerator.generate(123, LOBBY_WORLD_SIZE);
     gameMapRef.current = {
@@ -3320,7 +3294,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
   const initGame = useCallback((seed: number, players: Entity[]) => {
     // Initialize battle arena
     setKills(0); setScore(0); setTotalRecruitsMatch(0); 
-    pendingRecruitsRef.current.clear();
     
     // Dynamic World Size based on player count
     const playerCount = players?.length || 1;
@@ -3962,7 +3935,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         if (me) {
                             const returnedUnitCount = g.units.length;
                             me.units.push(...g.units);
-                            registerPendingUnitAdds(returnedUnitCount, `rejoin:${g.id}`);
                             socketRef.current?.emit('rejoin_garrison', {
                               roomId: currentRoomRef.current?.id,
                               garrisonId: g.id,
@@ -4111,7 +4083,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                   setTotalRecruitsMatch(r => r + 1); 
                   syncEntityVisualUnits(ent, ent.units.length - 1);
                   setScore(Math.max(0, ent.units.length - 1));
-                  pendingRecruitsRef.current.set(neighbor.unit.id, Date.now());
                 }
               }
             }
@@ -4940,7 +4911,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                 
                 // Visual
                 createDust(nearbyGarrison.pos.x, nearbyGarrison.pos.y, nearbyGarrison.color);
-                registerPendingUnitAdds(returnedUnitCount, `rejoin:${nearbyGarrison.id}`);
                 socketRef.current?.emit('rejoin_garrison', {
                     roomId: currentRoomRef.current?.id,
                     garrisonId: nearbyGarrison.id,
@@ -7457,7 +7427,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                               for(let i=0; i<count; i++) {
                                 playerRef.current.units.push({ id: generateId(), pos: { ...playerRef.current.units[0].pos }, color: playerRef.current.color, type: 'infantry', hp: 100 });
                               }
-                              registerPendingUnitAdds(count, 'purchase');
                               socketRef.current?.emit('purchase_units', {
                                 roomId: currentRoomRef.current?.id,
                                 count,
