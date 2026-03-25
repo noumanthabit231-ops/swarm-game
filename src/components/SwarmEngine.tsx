@@ -4077,10 +4077,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               const neighbor = neighbors[i];
               if (neighbor.entityId !== 'neutral') continue;
               if (getDistance(head.pos, neighbor.unit.pos) < 400) {
-                if (!isMultiplayer || ent.id !== myId) {
-                  const spawnPos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, Math.max(0, ent.units.length - 1));
-                  ent.units.push({ ...neighbor.unit, pos: spawnPos, color: ent.color, empireId: ent.empireId, hp: 100 });
-                }
+                const spawnPos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, Math.max(0, ent.units.length - 1));
+                ent.units.push({ ...neighbor.unit, pos: spawnPos, color: ent.color, empireId: ent.empireId, hp: 100 });
                 neutralsRef.current = neutralsRef.current.filter(nu => nu.id !== neighbor.unit.id);
                 neighbors.splice(i, 1);
                 if (ent.id === myId) { 
@@ -4089,10 +4087,8 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     recruitedIds: [neighbor.unit.id]
                   });
                   setTotalRecruitsMatch(r => r + 1); 
-                  if (!isMultiplayer) {
-                    syncEntityVisualUnits(ent, ent.units.length - 1);
-                    setScore(Math.max(0, ent.units.length - 1));
-                  }
+                  syncEntityVisualUnits(ent, ent.units.length - 1);
+                  setScore(Math.max(0, ent.units.length - 1));
                 }
               }
             }
