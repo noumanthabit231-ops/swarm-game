@@ -3106,7 +3106,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             if (pHead && getDistance(clickedGarrison.pos, pHead.pos) < 150) {
                 // Rejoin
                 const returnedUnitCount = clickedGarrison.units.length;
-                playerRef.current.units.push(...clickedGarrison.units);
+                if (!isMultiplayer) {
+                  playerRef.current.units.push(...clickedGarrison.units);
+                  setScore(Math.max(0, playerRef.current.units.length - 1));
+                }
                 const gIdx = garrisonsRef.current.findIndex(g => g.id === clickedGarrison.id);
                 if (gIdx !== -1) garrisonsRef.current.splice(gIdx, 1);
                 recentlyDestroyedGarrisons.current.set(clickedGarrison.id, Date.now());
@@ -3934,7 +3937,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                         const me = entitiesRef.current.find(e => e.id === myId);
                         if (me) {
                             const returnedUnitCount = g.units.length;
-                            me.units.push(...g.units);
+                            if (!isMultiplayer) {
+                              me.units.push(...g.units);
+                              setScore(Math.max(0, me.units.length - 1));
+                            }
                             socketRef.current?.emit('rejoin_garrison', {
                               roomId: currentRoomRef.current?.id,
                               garrisonId: g.id,
@@ -4071,8 +4077,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
               const neighbor = neighbors[i];
               if (neighbor.entityId !== 'neutral') continue;
               if (getDistance(head.pos, neighbor.unit.pos) < 400) {
-                const spawnPos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, Math.max(0, ent.units.length - 1));
-                ent.units.push({ ...neighbor.unit, pos: spawnPos, color: ent.color, empireId: ent.empireId, hp: 100 });
+                if (!isMultiplayer || ent.id !== myId) {
+                  const spawnPos = getFollowerFormationPos(head.pos, ent.facingAngle || 0, Math.max(0, ent.units.length - 1));
+                  ent.units.push({ ...neighbor.unit, pos: spawnPos, color: ent.color, empireId: ent.empireId, hp: 100 });
+                }
                 neutralsRef.current = neutralsRef.current.filter(nu => nu.id !== neighbor.unit.id);
                 neighbors.splice(i, 1);
                 if (ent.id === myId) { 
@@ -4081,8 +4089,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                     recruitedIds: [neighbor.unit.id]
                   });
                   setTotalRecruitsMatch(r => r + 1); 
-                  syncEntityVisualUnits(ent, ent.units.length - 1);
-                  setScore(Math.max(0, ent.units.length - 1));
+                  if (!isMultiplayer) {
+                    syncEntityVisualUnits(ent, ent.units.length - 1);
+                    setScore(Math.max(0, ent.units.length - 1));
+                  }
                 }
               }
             }
@@ -4900,7 +4910,10 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
             // Rejoin logic
             if (playerRef.current) {
                 const returnedUnitCount = nearbyGarrison.units.length;
-                playerRef.current.units.push(...nearbyGarrison.units);
+                if (!isMultiplayer) {
+                  playerRef.current.units.push(...nearbyGarrison.units);
+                  setScore(Math.max(0, playerRef.current.units.length - 1));
+                }
                 
                 // Remove from local
                 const gIdx = garrisonsRef.current.findIndex(g => g.id === nearbyGarrison.id);
@@ -7424,15 +7437,17 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
                             if (playerRef.current && playerRef.current.akce >= UNIT_PRICES.infantry * count) {
                               playerRef.current.akce -= UNIT_PRICES.infantry * count;
                               setPlayerAkce(playerRef.current.akce);
-                              for(let i=0; i<count; i++) {
-                                playerRef.current.units.push({ id: generateId(), pos: { ...playerRef.current.units[0].pos }, color: playerRef.current.color, type: 'infantry', hp: 100 });
+                              if (!isMultiplayer) {
+                                for(let i=0; i<count; i++) {
+                                  playerRef.current.units.push({ id: generateId(), pos: { ...playerRef.current.units[0].pos }, color: playerRef.current.color, type: 'infantry', hp: 100 });
+                                }
+                                setScore(Math.max(0, playerRef.current.units.length - 1));
                               }
                               socketRef.current?.emit('purchase_units', {
                                 roomId: currentRoomRef.current?.id,
                                 count,
                                 akce: playerRef.current.akce
                               });
-                              setScore(Math.max(0, playerRef.current.units.length - 1));
                               createDust(playerRef.current.units[0].pos.x, playerRef.current.units[0].pos.y, playerRef.current.color);
                             } else {
                               showError(t.notEnoughAkce || "Not enough Akçe!");
