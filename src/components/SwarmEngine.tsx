@@ -1538,10 +1538,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
           return;
       }
 
-      // NEW: Underground units take no damage from surface attacks
-      const p = playerRef.current;
-      if (p && p.isUnderground && !data.isUndergroundAttack) return;
-
       if (data.garrisonId) {
           const g = garrisonsRef.current.find(g => g.id === data.garrisonId);
           if (g && g.ownerId === myId && g.units.length > 0) {
@@ -1569,31 +1565,6 @@ const SwarmEngine: React.FC<SwarmEngineProps> = ({ initialEmpire, onBack, langua
 
         const p = playerRef.current;
           if (p && p.units.length > 0) {
-            // VERIFY DISTANCE ON VICTIM SIDE (Prevent lag-hits from afar)
-            // If the attacker is another player or AI, we check if they are actually close enough on OUR screen.
-            if (data.attackerId && data.attackerId !== myId) {
-                let attackerPos: Vector | null = null;
-                
-                if (data.attackerGarrisonId) {
-                    const g = garrisonsRef.current.find(gr => gr.id === data.attackerGarrisonId);
-                    if (g) attackerPos = g.pos;
-                } else {
-                    const ent = entitiesRef.current.find(e => e.id === data.attackerId);
-                    if (ent && ent.units.length > 0) attackerPos = ent.units[0].pos;
-                }
-                
-                if (attackerPos) {
-                    const dist = getDistance(p.units[0].pos, attackerPos);
-                    // Maximum engagement range is ~60px + unit radius. 
-                    // Allow some buffer (e.g., 180px) for high-speed dashes and network jitter.
-                    if (dist > 250) {
-                        return; // Discard damage if attacker is too far on our screen
-                    }
-                }
-            }
-
-            // The attacker is the authority for melee hits to ensure "what you see is what you hit".
-            
             // If no specific unit index is provided, target the LAST unit (non-commander) first.
             // This prevents instant commander death when the army is still large.
             let idx = data.unitIndex;
