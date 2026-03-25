@@ -23,6 +23,3 @@ dist-ssr
 *.sln
 *.sw?
 
-# Server files (kept in separate repo)
-server.js
-server.cjs
